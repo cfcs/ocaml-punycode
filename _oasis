@@ -1,0 +1,42 @@
+# See https://ocaml.org/learn/tutorials/setting_up_with_oasis.html for more
+OASISFormat:    0.4
+OCamlVersion:   >= 4.02.3
+Name:           punycode
+Version:        0.1
+Homepage:       https://github.com/cfcs/ocaml-punycode
+Synopsis:       Punycode (RFC 3492 and RFC 5891) conversion
+Maintainers:    root@localhost
+Authors:        none
+License:        gopher://localhost/
+Plugins:        META (0.4), DevFiles (0.4)
+BuildTools:     ocamlbuild
+AlphaFeatures:  ocamlbuild_more_args
+Description:
+  Punycode (RFC 3492 and RFC 5891) conversion
+
+SourceRepository master
+  Type: git
+  Location: https://github.com/cfcs/ocaml-punycode.git
+  Branch: master
+  Browser: https://github.com/cfcs/ocaml-punycode
+
+Library punycode
+  Path: src
+  Modules: Punycode
+  BuildDepends: uutf, astring, rresult
+
+Executable "ounit_test"
+  Build$: flag(tests)
+  Path: test
+  MainIs: test.ml
+  CompiledObject: best
+  Install: false
+  BuildDepends: punycode, oUnit, rresult
+
+Test "ounit_test"
+  Run$: flag(tests)
+  TestTools: ounit_test
+  Command: $ounit_test
+  WorkingDirectory: test
+
+# TODO: add links to BatInterfaces.Monad et. al.

@@ -1,3 +1,16 @@
+# autogen
+/configure
+/Makefile
+/setup.*
+/opam/
+/.merlin
+
+# Makefile
+/_build/
+/*.docdir
+/*.byte
+/*.native
+
 *.annot
 *.cmo
 *.cma
@@ -7,6 +20,8 @@
 *.cmx
 *.cmxs
 *.cmxa
+
+*.ml.swp
 
 # ocamlbuild working directory
 _build/
