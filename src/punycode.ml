@@ -1,9 +1,65 @@
 (* RFC 3492: IDNA Punycode implementation *)
 
+(* KNOWN bugs:
+** - domain names with trailing dots are rejected
+
+*)
+
 module Builtin_Buffer = Buffer (* keep reference after Astring.Buffer is opened*)
 open Uutf
 open Astring
 open Rresult
+
+type illegal_ascii_label =
+  | Illegal_label_size of string
+  | Label_contains_illegal_character of string
+  | Label_starts_with_illegal_character of char
+  | Label_ends_with_hyphen of string
+
+type punycode_decode_error =
+  | Illegal_basic_codepoints (* TODO this should be caught in is_valid_ascii_label ; ideally never used. *)
+  | Overflow_error
+  | Domain_name_too_long of string
+  | Illegal_label of illegal_ascii_label
+
+type punycode_encode_error =
+  | Malformed_utf8_input of string
+  | Overflow
+  | Domain_name_too_long of string
+  | Illegal_label of illegal_ascii_label
+
+let is_valid_ascii_label label : (string , illegal_ascii_label) Rresult.result =
+  (** validate length and character set in ascii DNS label *)
+  begin
+    if String.(length label > 0 && length label < 63)
+    then R.ok ()
+    else R.error @@ Illegal_label_size label
+  end
+  >>= fun () ->
+  begin match label.[0] , label.[pred @@ String.length label] with
+	| _ , '-' -> R.error @@ Label_ends_with_hyphen label
+        | '0'..'9' , _
+	| 'a'..'z' , _
+	| '_' , _ (* TODO this is invalid for some types of dns records, but ok for others *)
+	| 'A'..'Z' , _ -> R.ok ()
+	| c , _ -> R.error @@ Label_starts_with_illegal_character c
+  end
+  >>= fun () ->
+  begin match
+      label
+      |> String.for_all
+	   (function
+	     | 'a'..'z'
+	     | 'A'..'Z'
+	     | '0'..'9'
+	     | '-'
+	     | '_' (* TODO decide if we should notify the user of underscores *)
+	       -> true
+	     | _ -> false)
+    with
+    | true -> R.ok label
+    | false -> R.error @@ Label_contains_illegal_character label
+  end
 
 (* constants from RFC 3492 *)
 let initial_n = 0x80
@@ -63,10 +119,6 @@ let adapt delta numpoints firsttime =
   in
   k + (base - tmin + 1) * delta / (delta + skew)
 
-type punycode_decode_error =
-    Illegal_basic_codepoints
-  | Overflow_error
-
 let decode input (* preserveCase *) : (int list, punycode_decode_error) Rresult.result =
   let basic_codepoints, complex_codepoints =
     let basic_codepoints_len =
@@ -86,7 +138,7 @@ let decode input (* preserveCase *) : (int list, punycode_decode_error) Rresult.
         -> R.ok @@ (false, int_of_char c)::acc
       | _ , Error _
       | '\x80' .. '\xFF' , Ok _
-        -> R.error Illegal_basic_codepoints
+        -> R.error Illegal_basic_codepoints (* TODO this should be caught in is_valid_ascii_label ; consider refactoring *)
       end
     in String.fold_left f (R.ok []) basic_codepoints
   >>= fun filtered_basic_codepoints ->
@@ -144,10 +196,6 @@ let decode input (* preserveCase *) : (int list, punycode_decode_error) Rresult.
     in
     f ~n:initial_n ~i:0 ~w:1 ~k:base ~ic:0 ~value_output:List.(rev basic_codepoints) ~bias:initial_bias
 
-type punycode_encode_error =
-    Malformed_input of string
-  | Overflow
-			 
 let encode input_utf8 : ('a , punycode_encode_error) Rresult.result =
   let open Result in
   Uutf.String.fold_utf_8
@@ -160,7 +208,7 @@ let encode input_utf8 : ('a , punycode_encode_error) Rresult.result =
 		    (c :: input) , (c::basic_codepoints)
 		 | _ -> (c :: input) , basic_codepoints
 	   end
-   | Ok _ , `Malformed s -> R.error (Malformed_input s)
+   | Ok _ , `Malformed s -> R.error (Malformed_utf8_input s)
      end
    )
    (R.ok ([], [])) input_utf8
@@ -250,23 +298,39 @@ let to_ascii domain : (string, punycode_encode_error) Rresult.result =
   let for_each_label acc label =
     match acc , label with
     | Error _ , _ -> acc
-    | Ok _ , ""   -> R.error @@ Malformed_input label
+    | Ok _ , ""   -> R.error @@ Malformed_utf8_input label
     | Ok acc , _  ->
        if String.for_all (function '\x00' .. '\x7F' -> true | _ -> false) label
-       then R.ok (label :: acc)
+       then is_valid_ascii_label label
+	    |> R.reword_error (function e -> Illegal_label e)
+	    >>= fun _ -> R.ok (label :: acc)
        else
        begin
 	 match encode label with
-	 | Ok encoded -> R.ok @@ ("xn--" ^ (lst_to_string encoded)) :: acc
+	 | Ok encoded ->
+	    is_valid_ascii_label (lst_to_string encoded)
+	    |> R.reword_error (function e -> Illegal_label e)
+	    >>= fun encoded_str ->
+	    R.ok @@ ("xn--" ^ encoded_str) :: acc
 	 | (Error _) as err -> err
        end
   in
+  begin match String.length domain with
+	| len when len > 0 && len <= 253*4 (* rough limit on utf-8 strings *)
+	  -> R.ok ()
+	| _ -> R.error @@ Domain_name_too_long domain
+  end
+  >>= fun () ->
   String.cuts ~sep:"." domain
   |> List.fold_left for_each_label R.(ok [])
   >>= fun encoded_labels ->
-  List.rev encoded_labels
-  |> String.concat ~sep:"."
-  |> R.ok
+  begin match
+      List.rev encoded_labels
+      |> String.concat ~sep:"."
+    with
+    | s when String.length s <= 253 -> R.ok s (* make sure the output is sane *)
+    | s -> R.error @@ Domain_name_too_long s
+  end
 
 let to_unicode domain =
   let for_each_label acc label =
@@ -275,6 +339,9 @@ let to_unicode domain =
       | Error _ -> acc
       | Ok acc when String.is_prefix ~affix:"xn--" label
 	->
+	 is_valid_ascii_label label
+	 |> R.reword_error (function e -> (Illegal_label e :punycode_decode_error))
+	 >>= fun _ ->
 	 begin
 	   match
 	     (String.drop ~max:4 label |> decode)
@@ -286,6 +353,11 @@ let to_unicode domain =
       | Ok acc -> R.ok (label::acc)
     end
   in
+  begin if String.(length domain > 0 && length domain <= 253)
+	then R.ok ()
+	else R.error (Domain_name_too_long domain : punycode_decode_error)
+  end
+  >>= fun () ->
   String.cuts ~sep:"." domain
   |> List.fold_left for_each_label R.(ok [])
   >>= fun decoded_labels ->
