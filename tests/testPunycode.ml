@@ -1,5 +1,4 @@
 open OUnit2
-open Punycode
 open Rresult
 
 let test_decode_label _ =

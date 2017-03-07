@@ -6,7 +6,6 @@
 *)
 
 module Builtin_Buffer = Buffer (* keep reference after Astring.Buffer is opened*)
-open Uutf
 open Astring
 open Rresult
 
@@ -29,7 +28,7 @@ type punycode_encode_error =
   | Illegal_label of illegal_ascii_label
 
 let is_valid_ascii_label label : (string , illegal_ascii_label) Rresult.result =
-  (** validate length and character set in ascii DNS label *)
+  (* validate length and character set in ascii DNS label *)
   begin
     if String.(length label > 0 && length label < 63)
     then R.ok ()
@@ -64,7 +63,6 @@ let is_valid_ascii_label label : (string , illegal_ascii_label) Rresult.result =
 (* constants from RFC 3492 *)
 let initial_n = 0x80
 let initial_bias = 72
-let delimiter = "\x2D"
 let delimiter_int = 0x2D
 let base = 36
 let damp = 700
@@ -99,6 +97,7 @@ let encode_digit d uppercase_flag =
      d + 0x41 (* d + 'A' *)
   | false , '\x1a' .. '\x23' -> (* 26..35: lowercase 0..9 *)
      (d - 26) + 0x30 (* d-26 + '0' *)
+  | _ , _ -> failwith "should not happen"
 
 let adapt delta numpoints firsttime =
   let delta = match firsttime with
@@ -130,7 +129,7 @@ let decode input (* preserveCase *) : (int list, punycode_decode_error) Rresult.
   in
   let complex_codepoints = String.drop ~max:1 complex_codepoints in (* get rid of the '-' *)
 
-    let rec f acc c =
+    let f acc c =
       begin match c, acc with
       | 'A' .. 'Z' , Ok acc (* set uppercase flag*)
         -> R.ok @@ (true, int_of_char c)::acc
@@ -142,7 +141,7 @@ let decode input (* preserveCase *) : (int list, punycode_decode_error) Rresult.
       end
     in String.fold_left f (R.ok []) basic_codepoints
   >>= fun filtered_basic_codepoints ->
-    let uppercase_flags , basic_codepoints =
+    let _ (* uppercase_flags *) , basic_codepoints =
       List.split filtered_basic_codepoints
     in
     let rec f ~ic ~n ~i ~w ~k ~value_output ~bias =
@@ -199,7 +198,7 @@ let decode input (* preserveCase *) : (int list, punycode_decode_error) Rresult.
 let encode input_utf8 : ('a , punycode_encode_error) Rresult.result =
   let open Result in
   Uutf.String.fold_utf_8
-   (function acc -> fun idx -> fun c ->
+   (function acc -> fun _ (*index*) -> fun c ->
      begin match acc , c with
    | Error _ , _ -> acc
    | Ok (input, basic_codepoints) , `Uchar c ->
