@@ -317,6 +317,7 @@ let to_ascii domain : (string, punycode_encode_error) Rresult.result =
   begin match String.length domain with
 	| len when len > 0 && len <= 253*4 (* rough limit on utf-8 strings *)
 	  -> R.ok ()
+        | len when len = 0 -> R.error @@ Illegal_label (Illegal_label_size domain)
 	| _ -> R.error @@ Domain_name_too_long domain
   end
   >>= fun () ->
