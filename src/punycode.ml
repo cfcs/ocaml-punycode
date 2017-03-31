@@ -5,7 +5,7 @@
 
 *)
 
-module Builtin_Buffer = Buffer (* keep reference after Astring.Buffer is opened*)
+module Pervasives_Buffer = Buffer (* keep reference after Astring.Buffer is opened *)
 open Astring
 open Rresult
 
@@ -72,9 +72,9 @@ let skew = 38
 let punycode_max_int = 0x7f_ff_ff_ff
 
 let lst_to_string lst =
-  let b = Builtin_Buffer.create 0 in
+  let b = Pervasives_Buffer.create 0 in
   let () = List.(iter (Uutf.Buffer.add_utf_8 b) lst) in
-  Builtin_Buffer.to_bytes b |> Bytes.to_string
+  Pervasives_Buffer.to_bytes b |> Bytes.to_string
 			 
 let decode_digit cp =
   let cp_int = int_of_char cp in

@@ -26,8 +26,9 @@ let test_encode_label _ =
 let utf8_string_of_size (inti : int Gen.t) : string QCheck.arbitrary=
 let int_lst_t =
     Gen.small_list
-    Gen.(bool >>= function _ -> int_range 0 0xD7FF)
-    (* TODO select from higher unicode plane too, need to look up the constants *)
+    Gen.(bool >>= function
+                  | false -> int_range 0      0xD7FF
+                  | true  -> int_range 0xE000 0xFFFF)
 in
 let rec recursive_encoder enc = function
   | [] ->let _ = Uutf.encode enc `End in
