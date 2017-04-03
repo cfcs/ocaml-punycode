@@ -1,13 +1,209 @@
 (* RFC 3492: IDNA Punycode implementation *)
 
+(* From pages 8 through 9 in RFC 3492:
+   Although the only restriction Punycode imposes on the input integers
+   is that they be nonnegative, these parameters are especially designed
+   to work well with Unicode [UNICODE] code points, which are integers
+   in the range 0..10FFFF (but not D800..DFFF, which are reserved for
+   use by the UTF-16 encoding of Unicode).  The basic code points are
+   the ASCII [ASCII] code points (0..7F), of which U+002D (-) is the
+   delimiter, and some of the others have digit-values as follows:
+      code points    digit-values
+      ------------   ----------------------
+      41..5A (A-Z) =  0 to 25, respectively
+      61..7A (a-z) =  0 to 25, respectively
+      30..39 (0-9) = 26 to 35, respectively
+*)
+
 (* KNOWN bugs:
 ** - domain names with trailing dots are rejected
 
 *)
 
-module Pervasives_Buffer = Buffer (* keep reference after Astring.Buffer is opened *)
 open Astring
 open Rresult
+
+module type Bootstring_parameters =
+sig
+  (* Integer functions *)
+  type t
+  val of_int : int -> t
+  val of_char : char -> t
+  val ( / ) : t -> t -> t (* division *)
+  val ( + ) : t -> t -> t (* addition *)
+  val ( - ) : t -> t -> t (* subtraction *)
+  val ( * ) : t -> t -> t (* multiplication *)
+  val ( % ) : t -> t -> t (* remainder / modulo *)
+  val one : t
+  val zero : t
+
+  val base : t
+  val tmin : t
+  val tmax : t
+  val skew : t
+  val damp : t
+  val initial_bias : t
+  val initial_n : t
+  (* val delimiter : t  --- if this API was constructed to work on lists of codepoints rather than octet strings *)
+(*
+   The initial value of n cannot be greater than the minimum non-basic
+   code point that could appear in extended strings.
+
+   The remaining five parameters (tmin, tmax, skew, damp, and the
+   initial value of bias) need to satisfy the following constraints:
+
+      0 <= tmin <= tmax <= base-1
+      skew >= 1
+      damp >= 2
+      initial_bias mod base <= base - tmin
+*)
+end
+module Punycode_bootstring : Bootstring_parameters =
+struct
+include Int32
+let ( % ) = rem
+let ( * ) = mul
+let ( - ) = sub
+let ( + ) = add
+let ( / ) = div
+let of_char c = int_of_char c |> of_int
+
+let base = 36l
+let tmin = 1l
+let tmax = 26l
+let skew = 38l
+let damp = 700l
+let initial_bias = 72l
+let initial_n = 0x80l
+end
+
+
+module Bootstring
+(* Bootstring uses little-endian ordering *)
+: functor (Parameters : Bootstring_parameters) ->
+sig
+(* to_utf8 *)
+(* to_ascii *)
+val decode : string -> ((Parameters.t * Parameters.t) list, [ `Invalid_input | `No_xn_start | `Contains_complex_characters
+| `Canonical_violation
+| `No_dashes]) result
+
+end = functor (Parameters : Bootstring_parameters) ->
+struct
+
+  let adapt delta numpoints (firsttime:bool) =
+    let open Parameters in
+    let delta =
+      if firsttime
+      then delta / Parameters.damp
+      else delta / (of_int 2)
+    in
+    let delta = delta + (delta / numpoints) in
+    let k = zero in
+    let rec loop delta k =
+      begin match delta > ((base - tmin) * tmax) / (of_int 2) with
+      | false -> (delta, k)
+      | true ->
+        let delta = delta / (base - tmin) in
+        let k = k + base in
+        loop delta k
+      end
+    in
+    let (delta,k) = loop delta k in
+    k + (((base - tmin + one) * delta) / (delta + skew))
+
+  (* used in [decode] *)
+  let rec for_k ~bias ~complex ~char_ptr ~i ~w k =
+    let open Parameters in
+       if char_ptr >= String.length complex then None else
+       let digit = of_char complex.[char_ptr] in (*TODO fix *)
+       let new_char_ptr = Pervasives.(char_ptr + 1) in
+       let new_i = i + (digit * w) in (* TODO "fail on overflow" *)
+       let t = begin match () with
+               | () when k <= bias + tmin -> tmin
+               | () when k >= bias + tmax -> tmax
+               | () -> k - bias
+               end
+       in
+       if digit < t
+       then Some (new_char_ptr, new_i)
+       else for_k ~bias ~complex ~char_ptr:new_char_ptr ~i:(new_i)
+                   ~w:(w*(base - t)) (* TODO "fail on overflow" *)
+                   (k+base)
+
+   let rec decode_loop ~complex ~bias ~char_ptr ~i ~n ~output_lst ~output_plain =
+     let open Parameters in
+     let output_plain_len = of_int @@ String.length output_plain in
+     if char_ptr >= String.length complex then R.ok output_lst else
+
+     let oldi = i in
+
+     begin match for_k ~bias ~complex
+                       ~char_ptr
+                       ~i:oldi
+                       ~w:one
+                       base(*k=base to infinity in steps of base*)
+     with
+     | None -> R.error `Invalid_input
+     | Some v -> R.ok v
+     end
+     >>= fun (char_ptr, i) ->
+     let output_len = output_plain_len + (of_int @@ List.length output_lst) in
+     let bias = adapt (i-oldi) (output_len + one) (oldi = zero) in
+     let n = n + i / (output_len + one) in (* fail on overflow *)
+     let i = i % (output_len + one) in
+     (* if n is a basic codepoint then fail *)
+     if n < (of_int 0x7f) then R.error `Canonical_violation else R.ok ()
+     >>= fun () ->
+     (* insert n into output at position i *)
+     let output_lst = (i,n)::output_lst in
+     (* increment i [[[ We do this at the beginning of the loop]]] *)
+     decode_loop ~complex ~bias ~char_ptr ~i ~n ~output_lst ~output_plain
+
+  let decode input_str =
+   let open Parameters in
+   let n = Parameters.initial_n in
+   (*let i = zero in*)
+   let bias = Parameters.initial_bias in
+   
+   (* consume all code points before the last delimiter (if there is one)
+     and copy them to output, fail on any non-basic code point
+   *)
+   if not @@ String.for_all (function '\x80'..'\xff' -> false | '\x00'..'\x7f' -> true) input_str
+   then R.error `Contains_complex_characters
+   else R.ok ()
+   >>= fun () ->
+   begin match String.cut ~sep:"xn--" input_str with
+   | Some ("", input_str) -> R.ok input_str
+   | _ -> R.error `No_xn_start
+   end
+   >>= fun input_str ->
+   begin match String.cut ~rev:true ~sep:"-" input_str with
+   | None -> R.error `No_dashes
+   | Some x -> R.ok x
+   end
+   >>= fun (output_plain,complex) ->
+   let output_plain_len = of_int @@ String.length output_plain in
+   let i = output_plain_len in
+
+   (*
+   if more than zero code points were consumed then consume one more
+     (which will be the last delimiter)
+   *)
+   let i = if i <> zero then i + one else i in
+
+   decode_loop ~output_plain ~complex ~bias
+           ~char_ptr:0 (*char_ptr*)
+           ~i
+           ~n
+           ~output_lst:[] (* output_lst *)
+
+end
+
+module Punycode2 = Bootstring(Punycode_bootstring)
+
+module Pervasives_Buffer = Buffer (* keep reference after Astring.Buffer is opened *)
+open Astring
 
 type illegal_ascii_label =
   | Illegal_label_size of string

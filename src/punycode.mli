@@ -1,3 +1,6 @@
+(** Punycode (RFC 3492) utility library
+*)
+
 type illegal_ascii_label =
   | Illegal_label_size of string
   | Label_contains_illegal_character of string
@@ -17,4 +20,7 @@ type punycode_encode_error =
   | Illegal_label of illegal_ascii_label
 
 val to_ascii : string -> (string, punycode_encode_error) Rresult.result
+(** Converts a UTF-8-encoded string to a Punycode string prefixed with "xn--" *)
+
 val to_unicode : string -> (string, punycode_decode_error) Rresult.result
+(** Converts a Punycode-encoded string to UTF-8 *)
