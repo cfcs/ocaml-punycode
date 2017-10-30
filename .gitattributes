@@ -1,0 +1,2 @@
+*.ml* linguist-language=Ocaml
+*.html linguist-documentation
