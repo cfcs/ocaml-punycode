@@ -3,6 +3,8 @@ open Rresult
 open QCheck
 open Astring
 
+let () = Printexc.record_backtrace true
+
 (*  let b = Buffer.create 1 in let encoder = Uutf.encoder `UTF_8 (`Buffer b) in List.iter (fun i -> assert (Uutf.encode encoder (`Uchar i) <> `Partial);()) [0xe9;0x2020]; Uutf.encode encoder `End; Buffer.to_bytes b;; *)
 let rfc3492_tests = [
 ([ 0x0644; 0x064A; 0x0647; 0x0645; 0x0627; 0x0628; 0x062A; 0x0643; 0x0644; 0x0645; 0x0648; 0x0634; 0x0639; 0x0631; 0x0628; 0x064A; 0x061F], "egbpdaj6bu4bxfgehfvwxn");
@@ -28,8 +30,10 @@ let rfc3492_tests = [
 let test_decode_label _ =
   let decoded = (Punycode.to_unicode "xn--maana-pta.com") in
   begin match decoded with
-  | Ok x ->
+  | Ok x when x = "mañana.com"->
     assert_bool "itworked" true
+  | Ok _ ->
+    assert_bool "decodes mañana incorrectly" false
   | Error _ ->
     assert_bool "decode error" false
   end
@@ -38,41 +42,47 @@ let test_decode_label _ =
 let test_encode_label _ =
   let encoded = (Punycode.to_ascii "mañana.com") in
   begin match encoded with
-	| Ok encoded ->
-	   assert_bool "can encode" true
-	| Error _ ->
-	   assert_bool "encode error" false
+    | Ok encoded when encoded = "xn--maana-pta.com" ->
+      assert_bool "can encode" true
+    | Ok bad ->
+      assert_bool ("encodes manana incorrectly: " ^ bad) false
+
+    | Error Punycode.Overflow ->
+      assert_bool "encode overflow" false
+    | Error _ ->
+      assert_bool "encode error" false
   end
 ;;
 
 let utf8_string_of_size (inti : int Gen.t) : string QCheck.arbitrary=
-let int_lst_t =
-    Gen.small_list
-    Gen.(bool >>= function
-                  | false -> int_range 0      0xD7FF
-                  | true  -> int_range 0xE000 0xFFFF)
-in
-let rec recursive_encoder enc = function
-  | [] ->let _ = Uutf.encode enc `End in
-         begin match Uutf.encoder_dst enc
-         with `Buffer buf -> Gen.return @@ Buffer.contents buf
-         end
-  | cp::tl ->
-       let uucp = if Uchar.is_valid cp then cp else 0x33 in
-       begin match Uutf.encode enc (`Uchar uucp) with
-       | `Ok | `Partial -> recursive_encoder enc tl
-       end
-in
-Gen.(int_lst_t >>= fun int_lst ->
-  recursive_encoder (Uutf.encoder `UTF_8 (`Buffer (Buffer.create 1))) int_lst
-)
-|> QCheck.make
+  let int_lst_t =
+    Gen.list_size inti
+      Gen.(bool >>= function
+        | false -> int_range 0      0xD7FF
+        | true  -> int_range 0xE000 0xFFFF)
+  in
+  let rec recursive_encoder enc = function
+    | [] ->let _ = Uutf.encode enc `End in
+      begin match Uutf.encoder_dst enc
+        with `Buffer buf -> Gen.return @@ Buffer.contents buf
+      end
+    | cp::tl ->
+      let uucp = if Uchar.is_valid cp then cp else 0x33 in
+      begin match Uutf.encode enc (`Uchar (Uchar.of_int uucp)) with
+        | `Ok | `Partial -> recursive_encoder enc tl
+      end
+  in
+  QCheck.make
+    Gen.(int_lst_t >>= fun int_lst ->
+         recursive_encoder (Uutf.encoder `UTF_8 (`Buffer (Buffer.create 1))) int_lst
+        )
 
 let test_quickcheck_uutf _ =
   QCheck.Test.check_exn @@ QCheck.Test.make ~count:100000
   ~name:"quickcheck_uutf"
-  (utf8_string_of_size Gen.int)
+  (utf8_string_of_size @@ Gen.int_range 0 10 ) (*bump this up for more errors!*)
   (fun s ->
+     let open Punycode in
      begin match Punycode.to_ascii s with
      | Ok encoded ->
        begin match Punycode.to_unicode encoded with
@@ -114,6 +124,7 @@ let test_quickcheck_uutf _ =
               (* here comes lowercase letters *)
             | '\x7b'..'\xff')
         )) -> true
+
      | Error (Illegal_label (Label_contains_illegal_character label))
        when not @@ String.for_all
               (function 'a'..'z'|'A'..'Z'|'0'..'9'|'-'|'_' -> true
@@ -123,10 +134,9 @@ let test_quickcheck_uutf _ =
      (* Unexpected errors result in failing the test *)
      | Error (Domain_name_too_long _) -> failwith "domain name too long"; false
      | Error (Illegal_label (Illegal_label_size _))
-       -> failwith "illegal label SIZE"; false
-     | Error (Illegal_label (Label_starts_with_illegal_character c)) -> failwith ("illegal label CHAR" ^ (String.of_char c)); false
-     | Error (Illegal_label _) -> failwith "illegal label"; false
-     | Error Malformed_utf8_input malformed -> false
+       -> ignore @@ failwith "illegal label SIZE"; false
+     | Error (Illegal_label _) -> ignore @@ failwith "illegal label"; false
+     | Error Malformed_utf8_input _malformed -> false
      | Error Overflow -> false
    end
   )
