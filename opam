@@ -1,4 +1,4 @@
-opam-version: "1.0"
+opam-version: "1.2"
 name:         "punycode"
 homepage:     "https://github.com/cfcs/ocaml-punycode"
 dev-repo:     "https://github.com/cfcs/ocaml-punycode.git"
@@ -7,7 +7,6 @@ doc:          "https://cfcs.github.io/ocaml-punycode/doc"
 author:       ["cfcs"]
 maintainer:   ["cfcs"]
 license:      "BSD2"
-
 
 build: [
   ["ocaml" "pkg/pkg.ml" "build" "--pinned" "%{pinned}%"]
@@ -24,6 +23,6 @@ depends: [
   "uutf"
   "astring"
   "rresult"
-  "oUnit" {test}
+  "ounit" {test}
 ]
-available: [ ocaml-version >= "4.01.0" ]
+available: [ ocaml-version >= "4.02.0" ]
