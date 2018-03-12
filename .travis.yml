@@ -1,6 +1,7 @@
 env:
   global:
     - PACKAGE="punycode"
+    - OPAM_VERSION=1.2.2
   matrix:
     - OCAML_VERSION=4.04
     - OCAML_VERSION=4.05
