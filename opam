@@ -23,6 +23,7 @@ depends: [
   "uutf"
   "astring"
   "rresult"
+  "qcheck" {test}
   "ounit" {test}
 ]
 available: [ ocaml-version >= "4.02.0" ]
