@@ -82,9 +82,9 @@ let test_rfc3492_vectors _ =
         let supposed_label =
           (* fix incorrect casing in test vectors since Punycode is
              case-insensitive: *)
-          let lst = StringLabels.split_on_char ~sep:'-' supposed_label
+          let lst = String.cuts ~empty:true ~sep:"-" supposed_label
                     |> List.rev in
-          let last = List.hd lst |> StringLabels.lowercase_ascii in
+          let last = List.hd lst |> String.Ascii.lowercase in
           List.rev (last::List.tl lst) |> String.concat ~sep:"-"
         in
         let input_str = to_utf8 codepoints in
