@@ -15,14 +15,13 @@
       30..39 (0-9) = 26 to 35, respectively
 *)
 
-(* KNOWN bugs:
-** - domain names with trailing dots are rejected
-
-*)
-
 open Astring
 open Rresult
 
+(* (* below is an incomplete attempt at implementing a generic
+      Bootstrap implementation functorized over the Bootstrap parameters.
+   PRs welcome! :-)
+   *)
 module type Bootstring_parameters =
 sig
   (* Integer functions *)
@@ -58,6 +57,7 @@ sig
       initial_bias mod base <= base - tmin
 *)
 end
+
 module Punycode_bootstring : Bootstring_parameters =
 struct
 include Int32
@@ -76,7 +76,6 @@ let damp = 700l
 let initial_bias = 72l
 let initial_n = 0x80l
 end
-
 
 module Bootstring
 (* Bootstring uses little-endian ordering *)
@@ -200,6 +199,7 @@ struct
 end
 
 module Punycode2 = Bootstring(Punycode_bootstring)
+                   *)
 
 module Pervasives_Buffer = Buffer (* keep reference after Astring.Buffer is opened *)
 open Astring
@@ -211,7 +211,9 @@ type illegal_ascii_label =
   | Label_ends_with_hyphen of string
 
 type punycode_decode_error =
-  | Illegal_basic_codepoints (* TODO this should be caught in is_valid_ascii_label ; ideally never used. *)
+  | Illegal_basic_codepoints
+  (* TODO this should be caught in is_valid_ascii_label ; ideally never used. *)
+
   | Overflow_error
   | Domain_name_too_long of string
   | Illegal_label of illegal_ascii_label
@@ -222,7 +224,8 @@ type punycode_encode_error =
   | Domain_name_too_long of string
   | Illegal_label of illegal_ascii_label
 
-let is_valid_ascii_label label : (string , illegal_ascii_label) Rresult.result =
+let is_valid_ascii_label ?(ignore_hyphen_prefix=false) label
+  : (string , illegal_ascii_label) Rresult.result =
   (* validate length and character set in ascii DNS label *)
   begin
     if String.(length label > 0 && length label < 63)
@@ -236,6 +239,7 @@ let is_valid_ascii_label label : (string , illegal_ascii_label) Rresult.result =
     | 'a'..'z' , _
     | '_' , _ (* TODO this is invalid for some types of dns records, but ok for others *)
     | 'A'..'Z' , _ -> R.ok ()
+    | '-', _ when ignore_hyphen_prefix -> R.ok()
     | c , _ -> R.error @@ Label_starts_with_illegal_character c
   end
   >>= fun () ->
@@ -391,22 +395,21 @@ let decode input (* preserveCase *) : (int list, punycode_decode_error) Rresult.
     f ~n:initial_n ~i:0 ~w:1 ~k:base ~ic:0
       ~value_output:List.(rev basic_codepoints) ~bias:initial_bias
 
-let encode input_utf8 : ('aasdx list, punycode_encode_error) Rresult.result =
+let encode input_utf8 : (int list, punycode_encode_error) Rresult.result =
   let open Result in
   Uutf.String.fold_utf_8
-   (function acc -> fun _index -> fun c ->
-     begin match acc , c with
-   | Error _ , _ -> acc
-   | Ok (input, basic_codepoints) , `Uchar c ->
-     R.ok begin match Uchar.to_int c with
-       | i when i < 0x80 ->
-         (c :: input) , (c::basic_codepoints)
-       | _ -> (c :: input) , basic_codepoints
-     end
-   | Ok _ , `Malformed s -> R.error (Malformed_utf8_input s)
-     end
-   )
-   (R.ok ([], [])) input_utf8
+    (function acc -> fun _index -> fun c ->
+        acc >>= fun (input, basic_codepoints) ->
+        begin match c with
+          | `Uchar c ->
+            R.ok begin match Uchar.to_int c with
+              | i when i < 0x80 ->
+                (c :: input) , (c::basic_codepoints)
+              | _ -> (c :: input) , basic_codepoints
+            end
+          | `Malformed s -> R.error (Malformed_utf8_input s)
+        end )
+    (R.ok ([], [])) input_utf8
   >>= fun (input , basic_codepoints) ->
   let input = List.rev input in
   let basic_codepoints = List.rev basic_codepoints in
@@ -503,62 +506,60 @@ let to_ascii domain : (string, punycode_encode_error) Rresult.result =
   let for_each_label acc label =
     match acc , label with
     | Error _ , _ -> acc
-    | Ok _ , ""   -> R.error @@ Malformed_utf8_input label
-    | Ok acc , _  ->
-       if String.for_all (function '\x00' .. '\x7F' -> true | _ -> false) label
-       then is_valid_ascii_label label
+    | Ok (0, acc) , "" ->
+      Ok (0, ""::acc) (* allow empty label at the end*)
+    | Ok _ , ""  -> (* domain name contains ".." somewhere *)
+      Error (Illegal_label (Illegal_label_size "contains empty label"))
+    | Ok (remaining_labels, acc) , _  ->
+      if String.for_all (function '\x00' .. '\x7F' -> true | _ -> false) label
+      then is_valid_ascii_label label
+           |> R.reword_error (function e -> Illegal_label e)
+        >>= fun _ -> Ok (pred remaining_labels, label :: acc)
+      else
+        begin
+          match encode label with
+          | (Error _) as err -> err
+          | Ok encoded ->
+            is_valid_ascii_label ~ignore_hyphen_prefix:true
+              (lst_to_string @@ List.map Uchar.of_int encoded)
             |> R.reword_error (function e -> Illegal_label e)
-         >>= fun _ -> R.ok (label :: acc)
-       else
-         begin
-           match encode label with
-           | Ok encoded ->
-             is_valid_ascii_label (lst_to_string @@ List.map Uchar.of_int encoded)
-             |> R.reword_error (function e -> Illegal_label e)
-             >>= fun encoded_str ->
-             R.ok @@ ("xn--" ^ encoded_str) :: acc
-           | (Error _) as err -> err
-         end
+            >>| fun encoded_str ->
+            pred remaining_labels, ("xn--" ^ encoded_str) :: acc
+        end
   in
   begin match String.length domain with
-    | len when len > 0 && len <= 253*4 (* rough limit on utf-8 strings *)
-      -> R.ok ()
+    | len when len > 0 && len <= 253*4 -> (* rough limit on utf-8 strings *)
+      Ok ()
     | len when len = 0 -> R.error @@ Illegal_label (Illegal_label_size domain)
     | _ -> R.error @@ Domain_name_too_long domain
-  end
-  >>= fun () ->
-  String.cuts ~sep:"." domain
-  |> List.fold_left for_each_label R.(ok [])
-  >>= fun encoded_labels ->
-  begin match
-      List.rev encoded_labels
-      |> String.concat ~sep:"."
-    with
-    | s when String.length s <= 253 -> R.ok s (* make sure the output is sane *)
-    | s -> R.error @@ Domain_name_too_long s
-  end
+  end >>= fun () ->
+  let labels = String.cuts ~sep:"." domain in
+  List.fold_left (for_each_label) (Ok (List.length labels -1, [])) labels
+  >>= fun (_, encoded_labels) ->
+  match List.rev encoded_labels
+        |> String.concat ~sep:"." with
+  | s when String.length s <= 253 -> R.ok s (* make sure the output is sane *)
+  | s -> R.error @@ Domain_name_too_long s
 
 let to_unicode domain =
   let for_each_label acc label =
-    begin
-      match acc with
-      | Error _ -> acc
-      | Ok acc when String.is_prefix ~affix:"xn--" label
-        ->
-        is_valid_ascii_label label
+    acc >>= fun acc ->
+    if String.is_prefix ~affix:"xn--" label then begin
+        ( is_valid_ascii_label label
         |> R.reword_error (function e ->
             (Illegal_label e :punycode_decode_error))
-        >>= fun _ ->
-        begin
-          match
-            (String.drop ~max:4 label |> decode)
-          with
+        >>| String.drop ~max:4 >>| fun stripped ->
+        if not (String.is_infix ~affix:"-" stripped)
+        then "-" ^ stripped (* this contains ONLY punycode-stuff *)
+        else stripped ) >>= fun label ->
+        begin match decode label with
           | (Error _) as err -> err
-          | Ok decoded
-            -> R.ok @@ (lst_to_string (List.map Uchar.of_int decoded)) :: acc
+          | Ok decoded ->
+            R.ok @@ (lst_to_string (List.map Uchar.of_int decoded)) :: acc
         end
-      | Ok acc -> R.ok (label::acc)
-    end
+      end
+    else (* not punycode-encoded: *)
+      Ok (label::acc)
   in
   begin if String.(length domain > 0 && length domain <= 253)
     then R.ok ()

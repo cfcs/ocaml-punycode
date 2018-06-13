@@ -1,5 +1,5 @@
 true : color(always), bin_annot, safe_string, principal
-true : warn(+A-4-41-42-44-58)
+true : warn(+A-4-41-42-44-58-48)
 "src": include
 
 <*/*>: package(astring), package(uutf), package(rresult)

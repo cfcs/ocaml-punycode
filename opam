@@ -6,7 +6,7 @@ bug-reports:  "https://github.com/cfcs/ocaml-punycode/issues"
 doc:          "https://cfcs.github.io/ocaml-punycode/doc"
 author:       ["cfcs"]
 maintainer:   ["cfcs"]
-license:      "BSD2"
+license:      "AGPL"
 
 build: [
   ["ocaml" "pkg/pkg.ml" "build" "--pinned" "%{pinned}%"]
