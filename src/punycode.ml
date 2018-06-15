@@ -513,7 +513,7 @@ let encode input_utf8 : (int list, punycode_encode_error) Rresult.result =
   in
   let value_output : int list =
     (* initial value of output is prefixed with the ASCII characters and '-'*)
-    if List.length basic_codepoints > 0
+    if basic_codepoints <> []
     then (List.map Uchar.to_int basic_codepoints) @ [delimiter_int]
     else [] (* TODO if the string only contains complex characters, should it be prefixed with a '-' ? *)
   in
@@ -549,7 +549,7 @@ let to_ascii domain : (string, punycode_encode_error) Rresult.result =
         end
   in
   begin match String.length domain with
-    | len when len > 0 && len <= 253*4 -> (* rough limit on utf-8 strings *)
+    | len when len > 0 && len <= 255*4 -> (* rough limit on utf-8 strings *)
       Ok ()
     | len when len = 0 -> R.error @@ Illegal_label (Illegal_label_size domain)
     | _ -> R.error @@ Domain_name_too_long domain
@@ -559,7 +559,8 @@ let to_ascii domain : (string, punycode_encode_error) Rresult.result =
   >>= fun (_, encoded_labels) ->
   match List.rev encoded_labels
         |> String.concat ~sep:"." with
-  | s when String.length s <= 253 -> R.ok s (* make sure the output is sane *)
+  | "" -> R.error @@ Illegal_label (Illegal_label_size "")
+  | s when String.length s <= 255 -> R.ok s (* make sure the output is sane *)
   | s -> R.error @@ Domain_name_too_long s
 
 let to_utf8 domain =
@@ -582,7 +583,7 @@ let to_utf8 domain =
     else (* not punycode-encoded: *)
       Ok (label::acc)
   in
-  begin if String.(length domain > 0 && length domain <= 253)
+  begin if String.(length domain > 0 && length domain <= 255)
     then R.ok ()
     else R.error (Domain_name_too_long domain : punycode_decode_error)
   end

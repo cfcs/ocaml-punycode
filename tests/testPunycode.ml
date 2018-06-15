@@ -168,6 +168,10 @@ let test_regression_04 = must_be_good "\xE8\xA4\x86\xD1\xB8\xE7\xB6\x8A\xE4\
 
 let test_regression_05 = must_be_good "example.com.";;
 
+let test_regression_06 = (* generate "a.a.a.a" ... ".a.a." up to max valid len*)
+  must_be_good @@ String.v ~len:255
+    (fun i -> if i land 1 = 0 then 'a' else '.');;
+
 let utf8_string_of_size (inti : int Gen.t) : string QCheck.arbitrary =
   (* generates a valid utf-8 string containing random unicode characters *)
   let int_lst_t =
@@ -282,5 +286,6 @@ let suite = "ts_hand" >::: [
     "regression 03: from issue #1" >:: test_regression_03;
     "regression 04: from issue #1" >:: test_regression_04;
     "regression 05: empty end label, from issue #2" >:: test_regression_05;
+    "regression 06: domain name a.a.a. .. of 255 chars" >:: test_regression_06;
     "quickcheck_uutf" >:: test_quickcheck_uutf;
   ]

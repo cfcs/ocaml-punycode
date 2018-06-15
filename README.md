@@ -19,7 +19,7 @@ val to_ascii : string -> (string, punycode_encode_error) result
     encoded string would be an invalid domain name, for example if:
     - a non-Punycode label starts with a hyphen
     - a label is >= 64 ASCII characters or has a zero length
-    - the total length is > 263 ASCII characters.
+    - the total length is >= 256 ASCII characters.
  *)
 
 val to_utf8 : string -> (string, punycode_decode_error) result
