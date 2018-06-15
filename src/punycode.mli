@@ -19,10 +19,21 @@ type punycode_encode_error =
   | Illegal_label of illegal_ascii_label
 
 val to_ascii : string -> (string, punycode_encode_error) result
-(** Converts a UTF-8-encoded string to a Punycode string prefixed with "xn--" *)
+(** [to_ascii domain_name] is the ASCII-only Punycode
+    representation of [domain_name] with each label prefixed by "xn--",
+    and where [domain_name] is a UTF-8-encoded DNS domain name (or label).
+    An error is returned if the input is not valid UTF-8, or if the resulting
+    encoded string would be an invalid domain name, for example if:
+    - a non-Punycode label starts with a hyphen
+    - a label is >= 64 ASCII characters or has a zero length
+    - the total length is > 263 ASCII characters.
+ *)
 
 val to_utf8 : string -> (string, punycode_decode_error) result
-(** Converts a Punycode-encoded string (prefixed with "xn--" to UTF-8 *)
+(** [to_utf8 punycode_domain] is the UTF-8 representation of [punycode_domain]
+    where each label prefixed by "xn--" is decoded.
+    The implementation strives to only accept valid domain names, see [to_ascii]
+*)
 
 
 val msg_of_encode_error : punycode_encode_error -> [> `Msg of string]
