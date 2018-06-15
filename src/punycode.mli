@@ -18,7 +18,7 @@ type punycode_encode_error =
   | Domain_name_too_long of string
   | Illegal_label of illegal_ascii_label
 
-val to_ascii : string -> (string, punycode_encode_error) result
+val to_ascii : string -> (string, punycode_encode_error) Rresult.result
 (** [to_ascii domain_name] is the ASCII-only Punycode
     representation of [domain_name] with each label prefixed by "xn--",
     and where [domain_name] is a UTF-8-encoded DNS domain name (or label).
@@ -30,7 +30,7 @@ val to_ascii : string -> (string, punycode_encode_error) result
       (if not present it will be assumed).
  *)
 
-val to_utf8 : string -> (string, punycode_decode_error) result
+val to_utf8 : string -> (string, punycode_decode_error) Rresult.result
 (** [to_utf8 punycode_domain] is the UTF-8 representation of [punycode_domain]
     where each label prefixed by "xn--" is decoded.
     The implementation strives to only accept valid domain names, see [to_ascii]
