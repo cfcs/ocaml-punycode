@@ -146,15 +146,16 @@ let test_regression_00 _ = (* this used to be accepted *)
   end
 ;;
 
-let must_be_good input_str =
-  fun _ ->
+let must_be_bool error_assertion input_str (_:OUnit2.test_ctxt) =
   begin match Punycode.to_ascii input_str with
     | Ok encoded -> begin match Punycode.to_utf8 encoded with
         | Ok decoded when decoded = input_str -> ()
-        | _ -> assert_bool "failed to decode" false end
-    | Error _ -> assert_bool "failed to encode" false
+        | _ -> assert_bool "failed to decode" error_assertion end
+    | Error _ -> assert_bool "failed to encode" error_assertion
   end
-;;
+
+let must_be_good str = must_be_bool false str
+let must_be_bad  str = must_be_bool true str
 
 let test_regression_01 = must_be_good "\xE9\x95\x97\xEE\xB1\xB8\xEF\x9F\xB4";;
 
@@ -168,9 +169,26 @@ let test_regression_04 = must_be_good "\xE8\xA4\x86\xD1\xB8\xE7\xB6\x8A\xE4\
 
 let test_regression_05 = must_be_good "example.com.";;
 
-let test_regression_06 = (* generate "a.a.a.a" ... ".a.a." up to max valid len*)
-  must_be_good @@ String.v ~len:255
+let test_regression_06 = (* generate "a.a.a.a" ... ".a.a." up to len 255 *)
+  must_be_bad @@ String.v ~len:255
     (fun i -> if i land 1 = 0 then 'a' else '.');;
+
+let test_regression_07 = (* 253, ends with ".a" *)
+  must_be_good @@ String.v ~len:253
+    (fun i -> if i land 1 = 0 then 'a' else '.') ;;
+
+let test_regression_08 = (* 254 ends with ".bc" *)
+  must_be_bad @@ String.v ~len:252
+    (fun i -> if i land 1 = 0 then 'a' else '.') ^ "bc" ;;
+
+let test_regression_09 = (* 254, ends with ".b."*)
+  must_be_good @@ String.v ~len:251
+    (fun i -> if i land 1 = 0 then 'a' else '.') ^ ".b.";;
+
+let test_regression_10 =
+  must_be_good @@ String.v ~len:253 (* ends with '.' *)
+    (fun i -> if i land 1 = 0 then 'a' else '.') ^ "." ;;
+
 
 let utf8_string_of_size (inti : int Gen.t) : string QCheck.arbitrary =
   (* generates a valid utf-8 string containing random unicode characters *)
@@ -197,7 +215,7 @@ let utf8_string_of_size (inti : int Gen.t) : string QCheck.arbitrary =
                               (`Buffer (Buffer.create 1))) int_lst )
 
 let test_quickcheck_uutf _ =
-  QCheck.Test.check_exn @@ QCheck.Test.make ~count:500_000
+  QCheck.Test.check_exn @@ QCheck.Test.make ~count:500
     ~name:"quickcheck_uutf"
     (utf8_string_of_size @@ Gen.int_range 0 30 )
     (*bump this up for more errors!*)
@@ -286,6 +304,10 @@ let suite = "ts_hand" >::: [
     "regression 03: from issue #1" >:: test_regression_03;
     "regression 04: from issue #1" >:: test_regression_04;
     "regression 05: empty end label, from issue #2" >:: test_regression_05;
-    "regression 06: domain name a.a.a. .. of 255 chars" >:: test_regression_06;
+    "regression 06:FAIL domain a.a. .. .a. of 255 chars" >:: test_regression_06;
+    "regression 07:OK domain a.a. .. .a of 253 chars" >:: test_regression_07;
+    "regression 08:FAIL domain a.a. .. .bc of 254 chars" >:: test_regression_08;
+    "regression 09:OK domain a.a. .. .b. of 254 chars" >:: test_regression_09;
+    "regression 10:OK domain a.a. .. .a. of 253 chars" >:: test_regression_10;
     "quickcheck_uutf" >:: test_quickcheck_uutf;
   ]

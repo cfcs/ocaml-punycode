@@ -523,6 +523,11 @@ let encode input_utf8 : (int list, punycode_encode_error) Rresult.result =
     ~bias:initial_bias
     ~value_output
 
+let domain_size_is_ok domain =
+  let len = String.length domain in
+  len <> 0 && (len <= 253
+               || (len = 254 && String.is_suffix ~affix:"." domain))
+
 let to_ascii domain : (string, punycode_encode_error) Rresult.result =
   let for_each_label acc label =
     match acc , label with
@@ -559,8 +564,9 @@ let to_ascii domain : (string, punycode_encode_error) Rresult.result =
   >>= fun (_, encoded_labels) ->
   match List.rev encoded_labels
         |> String.concat ~sep:"." with
+  (* make sure the output length is sane: *)
   | "" -> R.error @@ Illegal_label (Illegal_label_size "")
-  | s when String.length s <= 255 -> R.ok s (* make sure the output is sane *)
+  | s when domain_size_is_ok domain -> R.ok s
   | s -> R.error @@ Domain_name_too_long s
 
 let to_utf8 domain =
@@ -583,7 +589,7 @@ let to_utf8 domain =
     else (* not punycode-encoded: *)
       Ok (label::acc)
   in
-  begin if String.(length domain > 0 && length domain <= 255)
+  begin if domain_size_is_ok domain
     then R.ok ()
     else R.error (Domain_name_too_long domain : punycode_decode_error)
   end
