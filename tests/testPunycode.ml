@@ -66,16 +66,16 @@ let rfc3492_vectors = [ (* lifted from RFC-3492 section 7.1*)
   ([0x305D; 0x306E; 0x30B9; 0x30D4; 0x30FC; 0x30C9; 0x3067], "d9juau41awczczp")
 ]
 
+let to_utf8 codepoint_lst =
+  let b = Buffer.create 1 in
+  let encoder = Uutf.encoder `UTF_8 (`Buffer b) in
+  List.iter (fun i ->
+      assert (Uutf.encode encoder (`Uchar i) <> `Partial);())
+    (List.map Uchar.of_int codepoint_lst);
+  match Uutf.encode encoder `End with _ -> () ;
+    Buffer.contents b
+
 let test_rfc3492_vectors _ =
-  let to_utf8 codepoint_lst =
-    let b = Buffer.create 1 in
-    let encoder = Uutf.encoder `UTF_8 (`Buffer b) in
-    List.iter (fun i ->
-        assert (Uutf.encode encoder (`Uchar i) <> `Partial);())
-      (List.map Uchar.of_int codepoint_lst);
-    match Uutf.encode encoder `End with _ -> () ;
-      Buffer.contents b
-  in
   List.fold_left
     ( fun acc -> fun (codepoints, supposed_label) ->
         acc >>= fun () ->
@@ -96,7 +96,7 @@ let test_rfc3492_vectors _ =
           else R.error_msgf "input: %S@,encoded: %S@,<>@,suppose: %S@ "
               input_str without_xn supposed_label
         ) >>= fun () ->
-        Punycode.to_unicode encoded
+        Punycode.to_utf8 encoded
         |> R.reword_error (fun _ -> R.msgf "failed to decode: %S" encoded)
         >>| fun decoded ->
         assert_bool "decodes correctly" (input_str = decoded);
@@ -107,14 +107,14 @@ let test_rfc3492_vectors _ =
 ;;
 
 let test_decode_label _ =
-  let decoded = (Punycode.to_unicode "xn--maana-pta.com") in
+  let decoded = (Punycode.to_utf8 "xn--maana-pta.com") in
   begin match decoded with
   | Ok x when x = "mañana.com"->
     assert_bool "itworked" true
   | Ok _ ->
     assert_bool "decodes mañana incorrectly" false
   | Error _ ->
-    assert_bool "decode error" false
+    assert_bool "decode error for manana" false
   end
 ;;
 
@@ -122,14 +122,14 @@ let test_encode_label _ =
   let encoded = (Punycode.to_ascii "mañana.com") in
   begin match encoded with
     | Ok encoded when encoded = "xn--maana-pta.com" ->
-      assert_bool "can encode" true
+      assert_bool "can encode manana" true
     | Ok bad ->
       assert_bool ("encodes manana incorrectly: " ^ bad) false
 
     | Error Punycode.Overflow ->
-      assert_bool "encode overflow" false
+      assert_bool "encode overflow in manana" false
     | Error _ ->
-      assert_bool "encode error" false
+      assert_bool "encode error in manana" false
   end
 ;;
 
@@ -138,15 +138,18 @@ let test_regression_00 _ = (* this used to be accepted *)
   begin match Punycode.to_ascii input_str with
     | Ok _ -> assert_bool "incorrectly accepted low ascii for encoding" false
     | Error Punycode.(Illegal_label (Label_contains_illegal_character label))
-      when label = "a\019-7k1d602x" -> ()
-    | Error _ -> assert_bool "incorrect encoding error" false
+      when label = "xn--a\019-7k1d602x" -> () (* good. *)
+    | Error err ->
+      ( match Punycode.msg_of_encode_error err with
+        | `Msg xxx ->
+          assert_bool ("unexpected encoding error:" ^ xxx) false)
   end
 ;;
 
 let must_be_good input_str =
   fun _ ->
   begin match Punycode.to_ascii input_str with
-    | Ok encoded -> begin match Punycode.to_unicode encoded with
+    | Ok encoded -> begin match Punycode.to_utf8 encoded with
         | Ok decoded when decoded = input_str -> ()
         | _ -> assert_bool "failed to decode" false end
     | Error _ -> assert_bool "failed to encode" false
@@ -192,25 +195,23 @@ let utf8_string_of_size (inti : int Gen.t) : string QCheck.arbitrary =
 let test_quickcheck_uutf _ =
   QCheck.Test.check_exn @@ QCheck.Test.make ~count:500_000
     ~name:"quickcheck_uutf"
-    (utf8_string_of_size @@ Gen.int_range 0 10 ) (*bump this up for more errors!*)
+    (utf8_string_of_size @@ Gen.int_range 0 30 )
+    (*bump this up for more errors!*)
     (fun input_str ->
        let explain_fail explanation value value2 =
-         let open String.Ascii in
-         ignore @@ failwith ("input str: "
-                             ^ (escape input_str) ^
-                             " failed: " ^ explanation
-                             ^ " value:"
-                             ^ (escape value)
-                             ^ " value2: "
-                             ^ (escape value2)
-                            ) ;
+         ignore @@ failwith
+           (strf "input str: %S failed: %S value1: %S value2: %S"
+                             input_str explanation value value2 ) ;
          false
        in
        let open Punycode in
        begin match Punycode.to_ascii input_str with
          | Ok encoded ->
-           begin match Punycode.to_unicode encoded with
-             | Error _ -> false
+           begin match Punycode.to_utf8 encoded with
+             | Error err ->
+               (match Punycode.msg_of_decode_error err with
+                | `Msg err ->
+                  explain_fail ("failed to decode encoded: " ^ err) encoded "")
              | Ok processed when processed <> input_str ->
                explain_fail "input_str <> decoded" processed encoded
              | Ok _processed -> true
@@ -220,24 +221,28 @@ let test_quickcheck_uutf _ =
          | Error Domain_name_too_long too_long
            when String.length too_long = 0 ->
            explain_fail "domain name too long, string length = 0" "" ""
+         (* Fail the test if the "illegal char" is actually okay: *)
          | Error (Illegal_label (Label_starts_with_illegal_character
                                    ('0'..'9' | 'a'..'z' | 'A'..'Z' | '_')
                                 )) ->
            explain_fail "Label starts with illegal character" "" ""
 
-         (* Expected failures *)
+         (* Expected failures: *)
          | Error Domain_name_too_long too_long
-           when String.length too_long >= 253*4
-           -> true
+           when String.length too_long >= 253*4 -> true
          | Error (Illegal_label (Illegal_label_size _))
            when String.is_empty input_str -> true
-         | Error (Illegal_label (Illegal_label_size _))
+         | Error (Illegal_label (Illegal_label_size label))
+           when String.length label > 63 -> true
+         | Error (Illegal_label (Illegal_label_size _)) (* starts with '.'*)
            when String.is_prefix ~affix:"." input_str -> true
+         (* contains empty label: *)
          | Error (Illegal_label (Illegal_label_size _))
            when String.is_infix ~affix:".." input_str -> true
          | Error (Illegal_label (Label_ends_with_hyphen _))
-           when String.is_suffix ~affix:"-" input_str
-           -> true
+           when String.is_suffix ~affix:"-" input_str -> true
+
+         (* Accept error when the label does start with illegal char: *)
          | Error (Illegal_label
                     (Label_starts_with_illegal_character
                        ('\x00'..'\x2f'
@@ -246,12 +251,13 @@ let test_quickcheck_uutf _ =
                        | '\x3a'..'\x40'
                        (* here comes uppercase letters *)
                        | '\x5b'..'\x5e'
-                       (* here comes '_' *)
+                       (* here comes '_' / 0x5f *)
                        | '\x60'
                        (* here comes lowercase letters *)
                        | '\x7b'..'\xff')
                     )) -> true
 
+         (* Accept error when the input actually contains illegal chars: *)
          | Error (Illegal_label (Label_contains_illegal_character label))
            when not @@ String.for_all
                (function | 'a'..'z'|'A'..'Z'|'0'..'9'|'-'|'_' -> true
@@ -259,22 +265,10 @@ let test_quickcheck_uutf _ =
                ) label
            -> true
 
-         (* Unexpected errors result in failing the test *)
-         | Error (Domain_name_too_long too_long) ->
-           explain_fail "domain name too long" too_long ""
-         | Error (Illegal_label (Illegal_label_size label))
-           -> explain_fail "illegal label SIZE" label ""
-         | Error (Illegal_label (Label_contains_illegal_character label)) ->
-             explain_fail "Label contains illegal character" label ""
-         | Error Malformed_utf8_input malformed ->
-           explain_fail "malformed utf8 input" malformed ""
-         | Error Overflow ->
-           explain_fail "overflow" "" ""
-
-         (* Unexpected errors, unexplained/generic: *)
-         | Error (Illegal_label _label_kind) ->
-           explain_fail "illegal label" "" ""
-
+         (* Unexpected errors result in failing the test: *)
+         | Error err ->
+           match Punycode.msg_of_encode_error err with
+             `Msg str -> explain_fail str "" ""
        end
     )
 
