@@ -39,11 +39,11 @@ utop # Punycode.to_utf8 "xn--s4h.example.ir";;
 - : (string, Punycode.punycode_decode_error) result =
 Result.Ok "☫.example.ir"
 
-utop # Punycode.to_ascii "☢.nuclear.disarmament.☮.example.com";;
+utop # Punycode.to_ascii "n☢clear.disarmament.☮.example.com";;
 - : (string, Punycode.punycode_encode_error) result =
-Ok "xn--j4h.nuclear.disarmament.xn--v4h.example.com"
+Ok "xn--nclear-3b9c.disarmament.xn--v4h.example.com"
 
-utop # Punycode.to_utf8 "xn--j4h.nuclear.disarmament.xn--v4h.example.com";;
+utop # Punycode.to_utf8 "xn--nclear-3b9c.disarmament.xn--v4h.example.com";;
 - : (string, Punycode.punycode_decode_error) result =
-Result.Ok "☢.nuclear.disarmament.☮.example.com"
+Result.Ok "n☢clear.disarmament.☮.example.com"
 ```
