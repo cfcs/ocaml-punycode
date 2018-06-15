@@ -20,9 +20,12 @@ depends: [
   "ocamlfind" {build}
   "ocamlbuild" {build}
   "topkg" {build}
-  "uutf"
+
   "astring"
+  "uchar" # for ocaml 4.02 compat
   "rresult"
+  "uutf"
+
   "qcheck" {test}
   "ounit" {test}
 ]

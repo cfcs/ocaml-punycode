@@ -135,12 +135,13 @@ let test_encode_label _ =
 
 let test_regression_00 _ = (* this used to be accepted *)
   let input_str = "a\x13\xE5\xAF\xAA\xEA\x8C\xB4" in
-  begin match Punycode.to_ascii input_str with
+  let open Punycode in
+  begin match to_ascii input_str with
     | Ok _ -> assert_bool "incorrectly accepted low ascii for encoding" false
-    | Error Punycode.(Illegal_label (Label_contains_illegal_character label))
+    | Error (Illegal_label (Label_contains_illegal_character label))
       when label = "xn--a\019-7k1d602x" -> () (* good. *)
     | Error err ->
-      ( match Punycode.msg_of_encode_error err with
+      ( match msg_of_encode_error err with
         | `Msg xxx ->
           assert_bool ("unexpected encoding error:" ^ xxx) false)
   end
