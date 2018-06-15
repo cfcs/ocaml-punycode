@@ -215,7 +215,7 @@ let utf8_string_of_size (inti : int Gen.t) : string QCheck.arbitrary =
                               (`Buffer (Buffer.create 1))) int_lst )
 
 let test_quickcheck_uutf _ =
-  QCheck.Test.check_exn @@ QCheck.Test.make ~count:500
+  QCheck.Test.check_exn @@ QCheck.Test.make ~count:200_000
     ~name:"quickcheck_uutf"
     (utf8_string_of_size @@ Gen.int_range 0 30 )
     (*bump this up for more errors!*)
