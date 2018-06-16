@@ -566,7 +566,7 @@ let to_ascii domain : (string, punycode_encode_error) Rresult.result =
         |> String.concat ~sep:"." with
   (* make sure the output length is sane: *)
   | "" -> R.error @@ Illegal_label (Illegal_label_size "")
-  | s when domain_size_is_ok domain -> R.ok s
+  | s when domain_size_is_ok s -> R.ok s
   | s -> R.error @@ Domain_name_too_long s
 
 let to_utf8 domain =

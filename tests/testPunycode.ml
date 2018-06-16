@@ -3,7 +3,7 @@ open Rresult
 open QCheck
 open Astring
 
-let () = Printexc.record_backtrace true
+let () = Printexc.record_backtrace false
 
 let rfc3492_vectors = [ (* lifted from RFC-3492 section 7.1*)
   ([ 0x0644; 0x064A; 0x0647; 0x0645; 0x0627; 0x0628; 0x062A; 0x0643; 0x0644;
@@ -65,15 +65,17 @@ let rfc3492_vectors = [ (* lifted from RFC-3492 section 7.1*)
   , "de-jg4avhby1noc0d");
   ([0x305D; 0x306E; 0x30B9; 0x30D4; 0x30FC; 0x30C9; 0x3067], "d9juau41awczczp")
 ]
-
-let to_utf8 codepoint_lst =
-  let b = Buffer.create 1 in
-  let encoder = Uutf.encoder `UTF_8 (`Buffer b) in
+let utf8_buffer_len = 254+4
+let utf8_buffer = Bytes.make utf8_buffer_len '\x00'
+let [@always_inline] to_utf8 codepoint_lst =
+  let encoder = Uutf.encoder `UTF_8 (`Manual) in
+  Uutf.Manual.dst encoder utf8_buffer 0 utf8_buffer_len ;
   List.iter (fun i ->
-      assert (Uutf.encode encoder (`Uchar i) <> `Partial);())
-    (List.map Uchar.of_int codepoint_lst);
-  match Uutf.encode encoder `End with _ -> () ;
-    Buffer.contents b
+      if Uutf.Manual.dst_rem encoder > utf8_buffer_len - 255 then
+        ignore @@ Uutf.encode encoder (`Uchar (Uchar.of_int i)))
+    codepoint_lst ;
+  ignore @@ Uutf.encode encoder `End ;
+  Bytes.sub_string utf8_buffer 0 (utf8_buffer_len - Uutf.Manual.dst_rem encoder)
 
 let test_rfc3492_vectors _ =
   List.fold_left
@@ -105,6 +107,17 @@ let test_rfc3492_vectors _ =
   |> function Ok () -> ()
             | Error (`Msg xxx) -> failwith xxx
 ;;
+
+let must_be_bool error_assertion input_str (_:OUnit2.test_ctxt) =
+  begin match Punycode.to_ascii input_str with
+    | Ok encoded -> begin match Punycode.to_utf8 encoded with
+        | Ok decoded when decoded = input_str -> ()
+        | _ -> assert_bool "failed to decode" error_assertion end
+    | Error _ -> assert_bool "failed to encode" error_assertion
+  end
+
+let must_be_good str = must_be_bool false str
+let must_be_bad  str = must_be_bool true str
 
 let test_decode_label _ =
   let decoded = (Punycode.to_utf8 "xn--maana-pta.com") in
@@ -147,17 +160,6 @@ let test_regression_00 _ = (* this used to be accepted *)
   end
 ;;
 
-let must_be_bool error_assertion input_str (_:OUnit2.test_ctxt) =
-  begin match Punycode.to_ascii input_str with
-    | Ok encoded -> begin match Punycode.to_utf8 encoded with
-        | Ok decoded when decoded = input_str -> ()
-        | _ -> assert_bool "failed to decode" error_assertion end
-    | Error _ -> assert_bool "failed to encode" error_assertion
-  end
-
-let must_be_good str = must_be_bool false str
-let must_be_bad  str = must_be_bool true str
-
 let test_regression_01 = must_be_good "\xE9\x95\x97\xEE\xB1\xB8\xEF\x9F\xB4";;
 
 let test_regression_02 = must_be_good "\xe2\x98\xad" ;;
@@ -190,110 +192,118 @@ let test_regression_10 =
   must_be_good @@ String.v ~len:253 (* ends with '.' *)
     (fun i -> if i land 1 = 0 then 'a' else '.') ^ "." ;;
 
+let test_regression_11 = must_be_bad ""
+
+let test_regression_12 = must_be_bad "."
 
 let utf8_string_of_size (inti : int Gen.t) : string QCheck.arbitrary =
   (* generates a valid utf-8 string containing random unicode characters *)
   let int_lst_t =
     Gen.list_size inti
-      Gen.(bool >>= function
-        | false -> int_range 0      0xD7FF
-        (* skip 0xD800..DFFF since they're reserved for UTF-16 encoding *)
-        | true  -> int_range 0xE000 0x10FFFF)
-  in
-  let rec recursive_encoder enc = function
-    | [] ->let _ = Uutf.encode enc `End in
-      begin match Uutf.encoder_dst enc
-        with `Buffer buf -> Gen.return @@ Buffer.contents buf
-           | _ -> failwith "should only use buffer here" end
-    | cp::tl ->
-      let uucp = if Uchar.is_valid cp then cp else 0x33 in
-      begin match Uutf.encode enc (`Uchar (Uchar.of_int uucp)) with
-        | `Ok | `Partial -> recursive_encoder enc tl end
+      Gen.(int_bound 70 >>= fun decide -> (* insert '.' approx every 70th *)
+           if decide = 0 then return 0x2E
+           else
+             bool >>= function
+             | false -> int_range 0      0xD7FF
+             (* skip 0xD800..DFFF since they're reserved for UTF-16 encoding *)
+             | true  -> int_range 0xE000 0x10FFFF)
   in
   QCheck.make
     Gen.(int_lst_t >>= fun int_lst ->
-         recursive_encoder (Uutf.encoder `UTF_8
-                              (`Buffer (Buffer.create 1))) int_lst )
+         Gen.return (to_utf8 int_lst))
+
+let test_quickcheck_case input_str =
+  let explain_fail explanation value value2 =
+    ignore @@ failwith
+      (strf "input str: %S failed: %S value1: %S value2: %S"
+         input_str explanation value value2 ) ;
+    false
+  in
+  let open Punycode in
+  begin match Punycode.to_ascii input_str with
+    (* Not expected to be OK: *)
+    | Ok encoded when String.length encoded > 254 ->
+      explain_fail "Mistakenly generated long domain" encoded ""
+    | Ok encoded when String.length encoded = 254 &&
+                      encoded.[String.length encoded -1] <> '.' ->
+      explain_fail "domain len=254, but doesn't end in '.'" encoded ""
+    | Ok "" ->
+      explain_fail "encoded empty domain" "" ""
+
+    (* Encoding went ok, try to decode: *)
+    | Ok encoded ->
+      begin match Punycode.to_utf8 encoded with
+        | Error err ->
+          (match Punycode.msg_of_decode_error err with
+           | `Msg err ->
+             explain_fail ("failed to decode encoded: " ^ err) encoded "")
+        | Ok processed when processed <> input_str ->
+          explain_fail "input_str <> decoded" processed encoded
+        | Ok _processed -> true
+      end
+
+    (* Blacklist results from errors (regressions) *)
+    | Error Domain_name_too_long "" ->
+      explain_fail "domain name too long, string length = 0" "" ""
+    (* Fail the test if the "illegal char" is actually okay: *)
+    | Error (Illegal_label (Label_starts_with_illegal_character
+                              ('0'..'9' | 'a'..'z' | 'A'..'Z' | '_')
+                           )) ->
+      explain_fail "Label starts with illegal character" "" ""
+
+    (* Expected failures: *)
+    | Error (Illegal_label (Illegal_label_size "")) -> true
+    | Error (Illegal_label (Illegal_label_size label))
+      when String.length label > 63 -> true
+    | Error (Illegal_label (Illegal_label_size _)) (* starts with '.'*)
+      when String.is_prefix ~affix:"." input_str -> true
+    (* contains empty label: *)
+    | Error (Illegal_label (Illegal_label_size _))
+      when String.is_infix ~affix:".." input_str -> true
+    | Error (Illegal_label (Label_ends_with_hyphen _))
+      when String.is_suffix ~affix:"-" input_str -> true
+    | Error Domain_name_too_long too_long
+      when String.length too_long >= 255 -> true
+    | Error Domain_name_too_long too_long
+      when String.length too_long = 254
+        && too_long.[253] <> '.' -> true
+
+    (* Accept error when the label does start with illegal char: *)
+    | Error (Illegal_label
+               (Label_starts_with_illegal_character
+                  ('\x00'..'\x2f'
+                  (* note that we don't accept '-' at beginning *)
+                  (* make space for numbers *)
+                  | '\x3a'..'\x40'
+                  (* here comes uppercase letters *)
+                  | '\x5b'..'\x5e'
+                  (* here comes '_' / 0x5f *)
+                  | '\x60'
+                  (* here comes lowercase letters *)
+                  | '\x7b'..'\xff')
+               )) -> true
+
+    (* Accept error when the input actually contains illegal chars: *)
+    | Error (Illegal_label (Label_contains_illegal_character label))
+      when not @@ String.for_all
+          (function | 'a'..'z'|'A'..'Z'|'0'..'9'|'-'|'_' -> true
+                    | _illegal_char -> false
+          ) label
+      -> true
+
+    (* Unexpected errors result in failing the test: *)
+    | Error err ->
+      match Punycode.msg_of_encode_error err with
+        `Msg str -> explain_fail str "" "UNEXPECTED"
+  end
 
 let test_quickcheck_uutf _ =
   QCheck.Test.check_exn @@ QCheck.Test.make ~count:200_000
     ~name:"quickcheck_uutf"
-    (utf8_string_of_size @@ Gen.int_range 0 30 )
+    (* 87: ~3 * 87 gives us max len: *)
+    (utf8_string_of_size @@ Gen.int_range 1 87 )
     (*bump this up for more errors!*)
-    (fun input_str ->
-       let explain_fail explanation value value2 =
-         ignore @@ failwith
-           (strf "input str: %S failed: %S value1: %S value2: %S"
-                             input_str explanation value value2 ) ;
-         false
-       in
-       let open Punycode in
-       begin match Punycode.to_ascii input_str with
-         | Ok encoded ->
-           begin match Punycode.to_utf8 encoded with
-             | Error err ->
-               (match Punycode.msg_of_decode_error err with
-                | `Msg err ->
-                  explain_fail ("failed to decode encoded: " ^ err) encoded "")
-             | Ok processed when processed <> input_str ->
-               explain_fail "input_str <> decoded" processed encoded
-             | Ok _processed -> true
-           end
-
-         (* Blacklist results from errors (regressions) *)
-         | Error Domain_name_too_long too_long
-           when String.length too_long = 0 ->
-           explain_fail "domain name too long, string length = 0" "" ""
-         (* Fail the test if the "illegal char" is actually okay: *)
-         | Error (Illegal_label (Label_starts_with_illegal_character
-                                   ('0'..'9' | 'a'..'z' | 'A'..'Z' | '_')
-                                )) ->
-           explain_fail "Label starts with illegal character" "" ""
-
-         (* Expected failures: *)
-         | Error Domain_name_too_long too_long
-           when String.length too_long >= 253*4 -> true
-         | Error (Illegal_label (Illegal_label_size _))
-           when String.is_empty input_str -> true
-         | Error (Illegal_label (Illegal_label_size label))
-           when String.length label > 63 -> true
-         | Error (Illegal_label (Illegal_label_size _)) (* starts with '.'*)
-           when String.is_prefix ~affix:"." input_str -> true
-         (* contains empty label: *)
-         | Error (Illegal_label (Illegal_label_size _))
-           when String.is_infix ~affix:".." input_str -> true
-         | Error (Illegal_label (Label_ends_with_hyphen _))
-           when String.is_suffix ~affix:"-" input_str -> true
-
-         (* Accept error when the label does start with illegal char: *)
-         | Error (Illegal_label
-                    (Label_starts_with_illegal_character
-                       ('\x00'..'\x2f'
-                       (* note that we don't accept '-' at beginning *)
-                       (* make space for numbers *)
-                       | '\x3a'..'\x40'
-                       (* here comes uppercase letters *)
-                       | '\x5b'..'\x5e'
-                       (* here comes '_' / 0x5f *)
-                       | '\x60'
-                       (* here comes lowercase letters *)
-                       | '\x7b'..'\xff')
-                    )) -> true
-
-         (* Accept error when the input actually contains illegal chars: *)
-         | Error (Illegal_label (Label_contains_illegal_character label))
-           when not @@ String.for_all
-               (function | 'a'..'z'|'A'..'Z'|'0'..'9'|'-'|'_' -> true
-                         | _illegal_char -> false
-               ) label
-           -> true
-
-         (* Unexpected errors result in failing the test: *)
-         | Error err ->
-           match Punycode.msg_of_encode_error err with
-             `Msg str -> explain_fail str "" ""
-       end
-    )
+    test_quickcheck_case
 
 let suite = "ts_hand" >::: [
     "decode_label" >:: test_decode_label;
@@ -310,5 +320,9 @@ let suite = "ts_hand" >::: [
     "regression 08:FAIL domain a.a. .. .bc of 254 chars" >:: test_regression_08;
     "regression 09:OK domain a.a. .. .b. of 254 chars" >:: test_regression_09;
     "regression 10:OK domain a.a. .. .a. of 253 chars" >:: test_regression_10;
-    "quickcheck_uutf" >:: test_quickcheck_uutf;
+    "regression 11:FAIL \"\"" >:: test_regression_11;
+    "regression 12:FAIL \".\"" >:: test_regression_12;
+    "quickcheck_uutf" >::: [ OUnitTest.(TestCase (Custom_length 240.0,
+                                                 test_quickcheck_uutf))
+                           ];
   ]
