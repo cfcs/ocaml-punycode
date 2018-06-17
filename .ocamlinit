@@ -3,3 +3,4 @@
 #require "rresult"
 #mod_use "src/punycode.ml"
 open Rresult;;
+open Punycode;;

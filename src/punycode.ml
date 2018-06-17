@@ -337,8 +337,77 @@ let adapt delta numpoints firsttime =
   in
   k + (base - tmin + 1) * delta / (delta + skew)
 
+module ImmutArray : sig
+  type backing = Uchar.t
+  type 'a t constraint 'a = backing
+  val get : backing t -> int -> backing
+  val len : backing t -> int
+  val fold_left : (int -> backing -> int) -> int -> backing t -> int
+  val of_utf8 : (string -> 'malformed_error) -> string ->
+    ('acc -> Uchar.t -> 'acc) -> 'acc ->
+    (Uchar.t t * 'acc, 'malformed_error) Rresult.result
+  val of_utf8_save_basic_codepoints : (string -> 'malformed_error) -> string ->
+    (Uchar.t t * (Uchar.t list * int), 'malformed_error) Rresult.result
+  (*val span : 'a t -> int -> 'a t * 'a t*)
+  val insert_left : Uchar.t t -> int -> Uchar.t -> Uchar.t t
+  (*val of_array : Uchar.t array -> Uchar.t t
+    val to_array : 'a t -> 'a array*)
+  val to_list : 'a t -> 'a list
+  (*val to_utf8 : Uchar.t t -> string*)
+end = struct
+  type backing = Uchar.t
+  type 'a t = {arr : Uchar.t array ; len: int} constraint 'a = backing
+  (*let to_utf8 t =
+    (* this turns out to be slower than lst_to_string (to_list t) ... *)
+    let b = Pervasives_Buffer.create 64 in
+    for i = 0 to t.len - 1 do
+      Uutf.Buffer.add_utf_8 b t.arr.(i)
+    done ;
+    Pervasives_Buffer.contents b*)
+  (*let of_array old_arr = {arr = Array.copy old_arr ; len = Array.length old_arr}
+    let to_array {arr ; len} = Array.sub arr 0 len |> Array.copy*)
+  let get t idx =
+    if idx < t.len then t.arr.(idx)
+    else failwith "ImmutArray: index out of bounds"
+  let len {len ; _} = len
+  let insert_left t left_off uchar =
+    let fresh = Array.make (t.len+1) (Uchar.of_int 0) in
+    Array.blit t.arr 0 fresh 0 left_off ;
+    fresh.(left_off) <- uchar ;
+    Array.blit t.arr left_off fresh (left_off+1) (t.len-left_off) ;
+    { arr = fresh ; len = t.len+1 }
+  let to_list {arr ; len } = Array.sub arr 0 len |> Array.to_list
+  let fold_left cb initial_acc t =
+    let acc = ref initial_acc in
+    for i = 0 to t.len -1 do
+      acc := cb !acc t.arr.(i)
+    done ; !acc
+  let of_utf8 malformed_error utf8_str callback initial_acc =
+    let array = Array.make (String.length utf8_str) (Uchar.of_int 0) in
+    let ptr = ref 0 in
+    Uutf.String.fold_utf_8
+      (fun acc _codepoint_idx -> function
+         | `Malformed s -> R.error (malformed_error s)
+         | `Uchar c ->
+           acc >>= fun (callback_acc (*basic_codepoints, basic_len*)) ->
+           array.(!ptr) <- c ;
+           incr ptr ;
+           Ok (callback callback_acc c)
+      )
+      (R.ok (initial_acc)) utf8_str
+    >>| fun (callback_acc) ->
+    {arr = array ; len = !ptr }, callback_acc
+  let of_utf8_save_basic_codepoints malformed_error utf8_str =
+    of_utf8 malformed_error utf8_str
+      (fun (basic_codepoints, basic_len) c ->
+         if Uchar.to_int c < 0x80
+         then (c::basic_codepoints), succ basic_len
+         else basic_codepoints, basic_len
+      ) ([], 0)
+end
+
 let decode input (* preserveCase TODO *)
-  : (Uchar.t list, punycode_decode_error) Rresult.result =
+  : (Uchar.t ImmutArray.t, punycode_decode_error) Rresult.result =
   let basic_codepoints, complex_codepoints =
     (* string component after RIGHTMOST dash is the complex codepoints.
        If no dash is found, the label is assumed to be "basic". *)
@@ -346,15 +415,18 @@ let decode input (* preserveCase TODO *)
     | None -> input, ""
     | Some basic_complex_pair -> basic_complex_pair
   in
-  let initial_value_output =
-    String.fold_right (fun c acc -> Uchar.of_char c::acc) basic_codepoints [] in
+  let initial_value_output_len, initial_value_output =
+    ImmutArray.of_utf8 (fun s -> s) basic_codepoints (fun () _b -> ()) ()
+    |> R.get_ok |> fun (foo,()) -> ImmutArray.len foo, foo
+  in
+  let max_ic = String.length complex_codepoints in
 
-  let rec f ~ic ~n ~i ~w ~k ~value_output ~bias =
-    if ic >= String.length complex_codepoints then R.ok value_output
+  let rec f ~ic ~n ~i ~w ~k ~value_output ~value_output_len ~bias =
+    if ic >= max_ic then R.ok value_output
     else
       let oldi = i in
       let rec ff_inner ~ic ~w ~k ~i = (* while ic < input.length *)
-        if ic >= String.length complex_codepoints then R.error Overflow_error
+        if ic >= max_ic then R.error Overflow_error
         else
           let digit = decode_digit complex_codepoints.[ic] in
           let ic = ic + 1 in
@@ -376,64 +448,44 @@ let decode input (* preserveCase TODO *)
       in
       ff_inner ~ic ~w ~k ~i
       >>= fun (n , i, oldi, ic) ->
-      let out = List.(length value_output) + 1 in
+      let out = value_output_len + 1 in (* "out" == new length of output *)
       let bias = adapt (i-oldi) out (oldi = 0) in
-      begin
-        if i / out > punycode_max_int - n
+      let n = n + (i / out) in
+      begin if n > punycode_max_int
         then R.error Overflow_error
         else R.ok ()
-      end
-      >>= fun () ->
-      let n = n + (i / out) in
+      end >>= fun () ->
       let i = i mod out in
       let value_output =
-        let rec span i fst = function
-          | tl when i = 0 -> List.(rev fst) , tl
-          | [] -> List.(rev fst) , []
-          | hd::tl -> span (pred i) (hd::fst) tl
-        in
-        let fst , snd = span i [] value_output in
-        fst @ (Uchar.of_int n)::snd
-      in
-      f ~n ~i:(i+1) ~value_output ~ic ~w ~k ~bias
-    in
-    f ~n:initial_n ~i:0 ~w:1 ~k:base ~ic:0
-      ~value_output:initial_value_output ~bias:initial_bias
+        let insertion_point = i in
+        ImmutArray.insert_left value_output insertion_point (Uchar.of_int n) in
+      f ~n ~i:(i+1) ~value_output ~value_output_len:out ~ic ~w ~k ~bias
+  in
+  f ~n:initial_n ~i:0 ~w:1 ~k:base ~ic:0
+    ~value_output:initial_value_output
+    ~value_output_len:initial_value_output_len
+    ~bias:initial_bias
 
 let encode input_utf8 : (string, punycode_encode_error) Rresult.result =
-  Uutf.String.fold_utf_8
-    (fun acc -> fun _index -> function
-       | `Malformed s -> R.error (Malformed_utf8_input s)
-       | `Uchar c ->
-         acc >>= fun (input, input_len, basic_codepoints, basic_len) ->
-         R.ok begin match Uchar.to_int c with
-           | i when i < 0x80 ->
-             (c :: input) , succ input_len,
-             (c::basic_codepoints), succ basic_len
-           | _ -> (c :: input) , succ input_len, basic_codepoints, basic_len
-         end
-    )
-    (R.ok ([], 0, [], 0)) input_utf8
-  >>= fun (input , input_len, basic_codepoints, basic_codepoints_len) ->
+  ImmutArray.of_utf8_save_basic_codepoints
+    (fun s -> Malformed_utf8_input s) input_utf8
+  >>= fun (input, (basic_codepoints, basic_codepoints_len)) ->
   (* restore order after fold_utf_8 which reverses it: *)
-  let input = List.rev input |> Array.of_list in (* we don't mutate this *)
   let initial_value_output : Uchar.t list =
     (* initial value of output is prefixed with the ASCII characters and '-'*)
     if basic_codepoints <> []
-    then List.rev (Uchar.of_int delimiter_int :: basic_codepoints)
+    then Uchar.of_int delimiter_int :: basic_codepoints
     else [] (* if the string only contains complex characters, no '-' prefix *)
   in
   (* main encoding loop: *)
   let rec f ~n ~h ~delta ~bias ~(value_output:Uchar.t list)
     : ('a list , punycode_encode_error) Rresult.result =
-    if h >= input_len then R.ok value_output
+    if h >= ImmutArray.len input then R.ok value_output
     else
-      let m = Array.fold_left (* find lowest codepoint that in input: *)
+      let m = ImmutArray.fold_left (* find lowest codepoint that in input: *)
           (fun m -> fun uchar ->
              let char = Uchar.to_int uchar in
-             if char >= n && char <= m
-             then char else m
-          )
+             if char >= n then min char m else m)
           punycode_max_int input in
       begin match m - n > ( (punycode_max_int - delta) / (h+1)) with
         | true -> R.error Overflow
@@ -442,12 +494,13 @@ let encode input_utf8 : (string, punycode_encode_error) Rresult.result =
       >>= fun () ->
       let delta = delta + ( (m - n) * (h + 1) ) in
       let n : int = m in
-      let rec f_inner ~ic ~delta ~bias ~(n:int) ~h ~(value_output:Uchar.t list) =
+      let rec f_inner ~ic ~delta ~bias ~(n:int) ~h
+          ~(value_output:Uchar.t list) =
         (* input.each_with_index do |char, j| *)
-        if ic >= input_len
+        if ic >= ImmutArray.len input
         then R.ok ((delta , bias , n , h , value_output))
         else
-        let char = input.(ic) in
+        let char = ImmutArray.get input ic in
         begin match delta + 1 with
           | new_delta when Uchar.to_int char < n -> R.ok new_delta
           | new_delta when new_delta > punycode_max_int
@@ -468,14 +521,13 @@ let encode input_utf8 : (string, punycode_encode_error) Rresult.result =
                   in
                   if q < t
                   then
-                    value_output @ [Uchar.of_int @@ encode_digit q false]
+                    (Uchar.of_int @@ encode_digit q false)::value_output
                   else
                     let value_output =
-                      value_output
-                      @ [ Uchar.of_int @@
-                          encode_digit (t + ((q-t) mod (base - t))) false
-                          (*todo should be false?*)
-                        ]
+                      ( Uchar.of_int @@
+                        encode_digit (t + ((q-t) mod (base - t))) false
+                        (*todo should be false?*)
+                      )::value_output
                     in
                     let q = (q-t) / (base -t) in
                     let k = k + base in
@@ -492,21 +544,18 @@ let encode input_utf8 : (string, punycode_encode_error) Rresult.result =
               (value_output , bias , delta , h)
           end
         in
-        f_inner ~ic:(ic+1) ~delta ~bias ~n ~h ~value_output:value_output
+        f_inner ~ic:(ic+1) ~delta ~bias ~n ~h ~value_output
       in
       f_inner ~ic:0 ~delta ~bias ~n ~h ~value_output (* TODO *)
       >>= fun (delta , bias , n , h , value_output) ->
-      let n = succ n in
-      f ~n ~h ~delta:(delta+1) ~bias ~value_output
+      f ~n:(n+1) ~h ~delta:(delta+1) ~bias ~value_output
   in
   f ~n:initial_n
     ~h:basic_codepoints_len
     ~delta:0
     ~bias:initial_bias
     ~value_output:initial_value_output
-  (* TODO This is inefficient, but keeps this somewhat modular in case
-     we want to change the return type: *)
-  >>| lst_to_string
+  >>| List.rev >>| lst_to_string
 
 let domain_size_is_ok domain =
   let len = String.length domain in
@@ -568,7 +617,7 @@ let to_utf8 domain =
         begin match decode label with
           | (Error _) as err -> err
           | Ok decoded ->
-            R.ok @@ (lst_to_string decoded) :: acc
+            R.ok @@ (lst_to_string (ImmutArray.to_list decoded)) :: acc
         end
       end
     else (* not punycode-encoded: *)
