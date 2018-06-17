@@ -289,10 +289,11 @@ let tmax = 26
 let skew = 38
 let punycode_max_int = 0x7f_ff_ff_ff
 
+
 let lst_to_string lst =
-  let b = Pervasives_Buffer.create 0 in
-  let () = List.(iter (Uutf.Buffer.add_utf_8 b) lst) in
-  Pervasives_Buffer.to_bytes b |> Bytes.to_string
+  let b = Pervasives_Buffer.create 64 in
+  let () = List.iter (Uutf.Buffer.add_utf_8 b) lst in
+  Pervasives_Buffer.contents b
 
 let decode_digit cp =
   let cp_int = int_of_char cp in
@@ -337,35 +338,17 @@ let adapt delta numpoints firsttime =
   k + (base - tmin + 1) * delta / (delta + skew)
 
 let decode input (* preserveCase TODO *)
-  : (int list, punycode_decode_error) Rresult.result =
+  : (Uchar.t list, punycode_decode_error) Rresult.result =
   let basic_codepoints, complex_codepoints =
-    let basic_codepoints_len =
-      match String.find ~rev:true (function '-' -> true | _ -> false) input with
-      | Some x -> x
-      | None -> 0
-    in
-    String.span ~max:basic_codepoints_len input
+    (* string component after RIGHTMOST dash is the complex codepoints.
+       If no dash is found, the label is assumed to be "basic". *)
+    match String.cut ~rev:true ~sep:"-" input with
+    | None -> input, ""
+    | Some basic_complex_pair -> basic_complex_pair
   in
-  (* get rid of the '-': *)
-  let complex_codepoints = String.drop ~max:1 complex_codepoints in
+  let initial_value_output =
+    String.fold_right (fun c acc -> Uchar.of_char c::acc) basic_codepoints [] in
 
-    let f acc c =
-      begin match c, acc with
-      | 'A' .. 'Z' , Ok acc (* set uppercase flag*)
-        -> R.ok @@ (true, int_of_char c)::acc
-      | '\x00' .. '\x7F' , Ok acc
-        -> R.ok @@ (false, int_of_char c)::acc
-      | _ , Error _
-      | '\x80' .. '\xFF' , Ok _ ->
-        failwith (strf "Invalid basic codepoints encountered in [decode].\
-                        This is a BUG, please report upstream to the punycode\
-                        maintainers. Offending char: %C in input: %S" c input )
-      end
-  in String.fold_left f (R.ok []) basic_codepoints
-  >>= fun filtered_basic_codepoints ->
-  let _ (* TODO uppercase_flags *), basic_codepoints =
-    List.split filtered_basic_codepoints
-  in
   let rec f ~ic ~n ~i ~w ~k ~value_output ~bias =
     if ic >= String.length complex_codepoints then R.ok value_output
     else
@@ -410,38 +393,43 @@ let decode input (* preserveCase TODO *)
           | hd::tl -> span (pred i) (hd::fst) tl
         in
         let fst , snd = span i [] value_output in
-        fst @ n::snd
+        fst @ (Uchar.of_int n)::snd
       in
       f ~n ~i:(i+1) ~value_output ~ic ~w ~k ~bias
     in
     f ~n:initial_n ~i:0 ~w:1 ~k:base ~ic:0
-      ~value_output:List.(rev basic_codepoints) ~bias:initial_bias
+      ~value_output:initial_value_output ~bias:initial_bias
 
-let encode input_utf8 : (int list, punycode_encode_error) Rresult.result =
+let encode input_utf8 : (string, punycode_encode_error) Rresult.result =
   Uutf.String.fold_utf_8
-    (function acc -> fun _index -> fun c ->
-        acc >>= fun (input, basic_codepoints) ->
-        begin match c with
-          | `Uchar c ->
-            R.ok begin match Uchar.to_int c with
-              | i when i < 0x80 ->
-                (c :: input) , (c::basic_codepoints)
-              | _ -> (c :: input) , basic_codepoints
-            end
-          | `Malformed s -> R.error (Malformed_utf8_input s)
-        end )
-    (R.ok ([], [])) input_utf8
-  >>= fun (input , basic_codepoints) ->
-  let input = List.rev input in
-  let basic_codepoints = List.rev basic_codepoints in
+    (fun acc -> fun _index -> function
+       | `Malformed s -> R.error (Malformed_utf8_input s)
+       | `Uchar c ->
+         acc >>= fun (input, input_len, basic_codepoints, basic_len) ->
+         R.ok begin match Uchar.to_int c with
+           | i when i < 0x80 ->
+             (c :: input) , succ input_len,
+             (c::basic_codepoints), succ basic_len
+           | _ -> (c :: input) , succ input_len, basic_codepoints, basic_len
+         end
+    )
+    (R.ok ([], 0, [], 0)) input_utf8
+  >>= fun (input , input_len, basic_codepoints, basic_codepoints_len) ->
+  (* restore order after fold_utf_8 which reverses it: *)
+  let input = List.rev input |> Array.of_list in (* we don't mutate this *)
+  let initial_value_output : Uchar.t list =
+    (* initial value of output is prefixed with the ASCII characters and '-'*)
+    if basic_codepoints <> []
+    then List.rev (Uchar.of_int delimiter_int :: basic_codepoints)
+    else [] (* if the string only contains complex characters, no '-' prefix *)
+  in
   (* main encoding loop: *)
-  let rec f ~n ~h ~delta ~bias ~(value_output:int list)
+  let rec f ~n ~h ~delta ~bias ~(value_output:Uchar.t list)
     : ('a list , punycode_encode_error) Rresult.result =
-    if h >= List.(length input) then R.ok value_output
+    if h >= input_len then R.ok value_output
     else
-      let m = List.fold_left
+      let m = Array.fold_left (* find lowest codepoint that in input: *)
           (fun m -> fun uchar ->
-             (* char >= n && char <= m *)
              let char = Uchar.to_int uchar in
              if char >= n && char <= m
              then char else m
@@ -454,12 +442,12 @@ let encode input_utf8 : (int list, punycode_encode_error) Rresult.result =
       >>= fun () ->
       let delta = delta + ( (m - n) * (h + 1) ) in
       let n : int = m in
-      let rec f_inner ~ic ~delta ~bias ~(n:int) ~h ~value_output =
+      let rec f_inner ~ic ~delta ~bias ~(n:int) ~h ~(value_output:Uchar.t list) =
         (* input.each_with_index do |char, j| *)
-        if ic >= List.length input
+        if ic >= input_len
         then R.ok ((delta , bias , n , h , value_output))
         else
-        let char = List.nth input ic in (* TODO guard against overflow *)
+        let char = input.(ic) in
         begin match delta + 1 with
           | new_delta when Uchar.to_int char < n -> R.ok new_delta
           | new_delta when new_delta > punycode_max_int
@@ -472,7 +460,7 @@ let encode input_utf8 : (int list, punycode_encode_error) Rresult.result =
             if Uchar.to_int char = n then
               (* while true do *)
               let value_output =
-                let rec fff ~value_output ~k ~q =
+                let rec fff ~(value_output:Uchar.t list) ~k ~q =
                   let t = match 0 with
                     | _ when k <= bias -> tmin
                     | _ when k >= bias + tmax -> tmax
@@ -480,13 +468,13 @@ let encode input_utf8 : (int list, punycode_encode_error) Rresult.result =
                   in
                   if q < t
                   then
-                    let value_output = value_output @ [encode_digit q false] in
-                    value_output
+                    value_output @ [Uchar.of_int @@ encode_digit q false]
                   else
                     let value_output =
                       value_output
-                      @ [ encode_digit (t + ((q-t) mod (base - t))) false
-                      (*todo should be false?*)
+                      @ [ Uchar.of_int @@
+                          encode_digit (t + ((q-t) mod (base - t))) false
+                          (*todo should be false?*)
                         ]
                     in
                     let q = (q-t) / (base -t) in
@@ -496,7 +484,7 @@ let encode input_utf8 : (int list, punycode_encode_error) Rresult.result =
                 fff ~value_output ~k:base ~q:delta
               in
               let bias = adapt delta (h + 1)
-                  (h = List.length basic_codepoints) in
+                  (h = basic_codepoints_len) in
               let delta = 0 in
               let h = h+1 in
               (value_output , bias , delta , h)
@@ -511,17 +499,14 @@ let encode input_utf8 : (int list, punycode_encode_error) Rresult.result =
       let n = succ n in
       f ~n ~h ~delta:(delta+1) ~bias ~value_output
   in
-  let value_output : int list =
-    (* initial value of output is prefixed with the ASCII characters and '-'*)
-    if basic_codepoints <> []
-    then (List.map Uchar.to_int basic_codepoints) @ [delimiter_int]
-    else [] (* TODO if the string only contains complex characters, should it be prefixed with a '-' ? *)
-  in
   f ~n:initial_n
-    ~h:List.(length basic_codepoints)
+    ~h:basic_codepoints_len
     ~delta:0
     ~bias:initial_bias
-    ~value_output
+    ~value_output:initial_value_output
+  (* TODO This is inefficient, but keeps this somewhat modular in case
+     we want to change the return type: *)
+  >>| lst_to_string
 
 let domain_size_is_ok domain =
   let len = String.length domain in
@@ -547,7 +532,7 @@ let to_ascii domain : (string, punycode_encode_error) Rresult.result =
           | (Error _) as err -> err
           | Ok encoded ->
             is_valid_ascii_label
-              ("xn--" ^ lst_to_string @@ List.map Uchar.of_int encoded)
+              ("xn--" ^ encoded)
             |> R.reword_error (function e -> Illegal_label e)
             >>| fun encoded_str ->
             pred remaining_labels, encoded_str :: acc
@@ -583,7 +568,7 @@ let to_utf8 domain =
         begin match decode label with
           | (Error _) as err -> err
           | Ok decoded ->
-            R.ok @@ (lst_to_string (List.map Uchar.of_int decoded)) :: acc
+            R.ok @@ (lst_to_string decoded) :: acc
         end
       end
     else (* not punycode-encoded: *)
