@@ -67,7 +67,7 @@ let rfc3492_vectors = [ (* lifted from RFC-3492 section 7.1*)
 ]
 let utf8_buffer_len = 254+4
 let utf8_buffer = Bytes.make utf8_buffer_len '\x00'
-let [@always_inline] to_utf8 codepoint_lst =
+let to_utf8 codepoint_lst =
   let encoder = Uutf.encoder `UTF_8 (`Manual) in
   Uutf.Manual.dst encoder utf8_buffer 0 utf8_buffer_len ;
   List.iter (fun i ->
