@@ -223,24 +223,24 @@ let pp_illegal_label fmt err =
 
 type punycode_decode_error =
   | Overflow_error
-  | Domain_name_too_long of string
+  | Invalid_domain_name of string
   | Illegal_label of illegal_ascii_label
 
 let msg_of_decode_error = function
   | Overflow_error -> R.msg "Unspecified overflow error"
-  | Domain_name_too_long str -> R.msgf "Domain name too long: %S" str
+  | Invalid_domain_name str -> R.msgf "Invalid domain name: %S" str
   | Illegal_label label_error -> R.msgf "%a" pp_illegal_label label_error
 
 type punycode_encode_error =
   | Malformed_utf8_input of string
   | Overflow
-  | Domain_name_too_long of string
+  | Invalid_domain_name of string
   | Illegal_label of illegal_ascii_label
 
 let msg_of_encode_error = function
   | Malformed_utf8_input str -> R.msgf "Malformed UTF-8 input: %S" str
   | Overflow -> R.msg "Unexpected overflow"
-  | Domain_name_too_long str -> R.msgf "Domain name too long: %S" str
+  | Invalid_domain_name str -> R.msgf "Invalid domain name: %S" str
   | Illegal_label label_error ->
     R.msgf "Illegal ascii label: %a" pp_illegal_label label_error
 
@@ -353,7 +353,7 @@ module ImmutArray : sig
   (*val of_array : Uchar.t array -> Uchar.t t
     val to_array : 'a t -> 'a array*)
   val to_list : 'a t -> 'a list
-  (*val to_utf8 : Uchar.t t -> string*)
+  val to_utf8 : Uchar.t t -> string
 end = struct
   type backing = Uchar.t
   type 'a t = {arr : Uchar.t array ; len: int} constraint 'a = backing
@@ -404,6 +404,10 @@ end = struct
          then (c::basic_codepoints), succ basic_len
          else basic_codepoints, basic_len
       ) ([], 0)
+  let to_utf8 t =
+    let buf = Buffer.create (len t) in
+    fold_left (fun () uchar -> Uutf.Buffer.add_utf_8 buf uchar) () t;
+    Buffer.contents buf
 end
 
 let decode input (* preserveCase TODO *)
@@ -562,7 +566,8 @@ let domain_size_is_ok domain =
   len <> 0 && (len <= 253
                || (len = 254 && String.is_suffix ~affix:"." domain))
 
-let to_ascii domain : (string, punycode_encode_error) Rresult.result =
+let internal_to_domain_name domain
+  : (bool * Domain_name.t, punycode_encode_error) Rresult.result =
   let for_each_label acc label =
     match acc , label with
     | Error _ , _ -> acc
@@ -591,19 +596,31 @@ let to_ascii domain : (string, punycode_encode_error) Rresult.result =
     | len when len > 0 && len <= 255*4 -> (* rough limit on utf-8 strings *)
       Ok ()
     | len when len = 0 -> R.error @@ Illegal_label (Illegal_label_size domain)
-    | _ -> R.error @@ Domain_name_too_long domain
+    | _ -> R.error @@ Invalid_domain_name domain
   end >>= fun () ->
   let labels = String.cuts ~sep:"." domain in
   List.fold_left (for_each_label) (Ok (List.length labels -1, [])) labels
   >>= fun (_, encoded_labels) ->
-  match List.rev encoded_labels
-        |> String.concat ~sep:"." with
-  (* make sure the output length is sane: *)
-  | "" -> R.error @@ Illegal_label (Illegal_label_size "")
-  | s when domain_size_is_ok s -> R.ok s
-  | s -> R.error @@ Domain_name_too_long s
+  let has_dot, encoded_labels = match encoded_labels with
+    | ""::tl -> true, List.rev tl
+    | tl -> false, List.rev tl in
+  Domain_name.of_strings ~hostname:false encoded_labels
+  |> R.reword_error (fun (`Msg msg) -> Invalid_domain_name
+                        (msg^": "^(String.concat ~sep:"."
+                                     (List.map String.Ascii.escape_string
+                                        encoded_labels ))))
+  >>| fun domain -> has_dot, domain
 
-let to_utf8 domain =
+let to_encoded_domain_name string =
+  internal_to_domain_name string >>| snd
+
+let to_ascii string : (string, punycode_encode_error) result =
+  internal_to_domain_name string >>| fun (has_dot, domain) ->
+  match Domain_name.to_string domain with
+  | encoded_str when has_dot -> encoded_str ^ "."
+  | encoded_str -> encoded_str
+
+let of_domain_labels (labels:string list) =
   let for_each_label acc label =
     acc >>= fun acc ->
     if String.is_prefix ~affix:"xn--" label then begin
@@ -617,20 +634,50 @@ let to_utf8 domain =
         begin match decode label with
           | (Error _) as err -> err
           | Ok decoded ->
-            R.ok @@ (lst_to_string (ImmutArray.to_list decoded)) :: acc
+            R.ok @@ decoded :: acc
         end
       end
     else (* not punycode-encoded: *)
-      Ok (label::acc)
+      ImmutArray.of_utf8
+        (fun s -> (Invalid_domain_name "Invalid ASCII label"
+                   : punycode_decode_error))
+        label (fun () _ -> ()) () >>| fst
+      >>| fun label -> label::acc
   in
-  begin if domain_size_is_ok domain
-    then R.ok ()
-    else R.error (Domain_name_too_long domain : punycode_decode_error)
-  end
-  >>= fun () ->
-  String.cuts ~sep:"." domain
-  |> List.fold_left for_each_label R.(ok [])
-  >>= fun decoded_labels ->
-  List.rev decoded_labels
-  |> String.concat ~sep:"."
-  |> R.ok
+  (((Domain_name.of_strings ~hostname:false labels >>| Domain_name.to_strings
+     |> R.reword_error (fun (`Msg msg) ->
+         (Invalid_domain_name msg : punycode_decode_error)
+       ) >>= List.fold_left for_each_label R.(ok []))
+    >>= (fun fqdn ->
+        let decoded_labels = match fqdn with
+          | hd::decoded_labels when ImmutArray.len hd = 0 ->
+            decoded_labels
+          | decoded_labels -> decoded_labels
+        in
+        let len = List.fold_left
+            (fun acc s -> acc + ImmutArray.len s) 0 decoded_labels in
+        if 253 >= len && 0 < len
+        then Ok (List.rev fqdn)
+        else
+          Error (Invalid_domain_name "decoded size invalid"
+                 : punycode_decode_error))))
+
+let of_domain_name (domain:Domain_name.t) =
+  (Domain_name.to_strings domain |> of_domain_labels)
+  >>| fun x -> List.map ImmutArray.to_list x
+
+let to_utf8_list domain =
+  (Domain_name.of_string ~hostname:false domain
+   |> R.reword_error (fun (`Msg x) ->
+       (Invalid_domain_name x : punycode_decode_error))
+  ) >>| Domain_name.to_strings >>= of_domain_labels
+  >>| List.map ImmutArray.to_utf8
+
+let to_utf8 domain =
+  let domain, is_fqdn = match String.head ~rev:true domain with
+    | Some '.' -> String.span ~rev:true ~max:1 domain |> fst, true
+    | _ -> domain, false
+  in
+  to_utf8_list domain
+  >>| (fun lst -> if is_fqdn then lst@[""] else lst)
+  >>| String.concat ~sep:"."

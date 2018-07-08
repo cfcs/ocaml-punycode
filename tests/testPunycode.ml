@@ -243,8 +243,8 @@ let test_quickcheck_case input_str =
       end
 
     (* Blacklist results from errors (regressions) *)
-    | Error Domain_name_too_long "" ->
-      explain_fail "domain name too long, string length = 0" "" ""
+    | Error (Invalid_domain_name "invalid host name") when input_str = "" ->
+      explain_fail "domain name too long, string length = 0" input_str ""
     (* Fail the test if the "illegal char" is actually okay: *)
     | Error (Illegal_label (Label_starts_with_illegal_character
                               ('0'..'9' | 'a'..'z' | 'A'..'Z' | '_')
@@ -262,9 +262,9 @@ let test_quickcheck_case input_str =
       when String.is_infix ~affix:".." input_str -> true
     | Error (Illegal_label (Label_ends_with_hyphen _))
       when String.is_suffix ~affix:"-" input_str -> true
-    | Error Domain_name_too_long too_long
+    | Error Invalid_domain_name too_long
       when String.length too_long >= 255 -> true
-    | Error Domain_name_too_long too_long
+    | Error Invalid_domain_name too_long
       when String.length too_long = 254
         && too_long.[253] <> '.' -> true
 
