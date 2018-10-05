@@ -41,7 +41,7 @@ val msg_of_decode_error : punycode_decode_error -> [> `Msg of string]
 *)
 
 
-(** {1 Unicode -> Punycode}*)
+(** {1:unicode2punycode Unicode -> Punycode}*)
 
 
 val to_encoded_domain_name : string ->
@@ -67,11 +67,11 @@ val to_ascii : string -> (string, punycode_encode_error) Rresult.result
 *)
 
 
-(** {1 Punycode -> Unicode} *)
+(** {1:punycode2unicode Punycode -> Unicode} *)
 
 
 val of_domain_name : Domain_name.t ->
-  (Uchar.t list list, punycode_decode_error)Rresult.result
+  (Uchar.t list list, punycode_decode_error) Rresult.result
 (** [of_domain_name domain] is [domain] decoded to a list of [Uchar.t] elements
     for each label in the domain name with each label prefixed by ["xn--"]
     decoded using the Punycode algorithm.*)
@@ -89,4 +89,18 @@ val to_utf8 : string -> (string, punycode_decode_error) Rresult.result
 (** [to_utf8 domain] is {!to_utf8_list} concatenated with dots.
     Contrary to {!to_utf8_list}, If [domain] is a FQDN (has a trailing ['.']),
     the decoded string will also have a trailing ['.'].
+*)
+
+(** {1 Examples} *)
+
+(** {2 Encoding a UTF-8 domain to a Punycode domain} *)
+
+(** [Punycode.to_ascii "n☢clear.disarmament.☮.example.com" =
+    Ok "xn--nclear-3b9c.disarmament.xn--v4h.example.com"]
+*)
+
+(** {2 Decoding a Punycode domain to a printable UTF-8 string} *)
+
+(** [Punycode.to_utf8 "xn--nclear-3b9c.disarmament.xn--v4h.example.com"
+    = Result.Ok "n☢clear.disarmament.☮.example.com"]
 *)

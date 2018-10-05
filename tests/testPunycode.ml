@@ -63,7 +63,8 @@ let rfc3492_vectors = [ (* lifted from RFC-3492 section 7.1*)
     0x308B; 0x0035; 0x79D2; 0x524D], "MajiKoi5-783gue6qz075azm5e");
   ([0x30D1; 0x30D5; 0x30A3; 0x30FC; 0x0064; 0x0065; 0x30EB; 0x30F3; 0x30D0]
   , "de-jg4avhby1noc0d");
-  ([0x305D; 0x306E; 0x30B9; 0x30D4; 0x30FC; 0x30C9; 0x3067], "d9juau41awczczp")
+  ([0x305D; 0x306E; 0x30B9; 0x30D4; 0x30FC; 0x30C9; 0x3067],
+   "d9juau41awczczp")
 ]
 let utf8_buffer_len = 254+4
 let utf8_buffer = Bytes.make utf8_buffer_len '\x00'
@@ -297,6 +298,19 @@ let test_quickcheck_case input_str =
         `Msg str -> explain_fail str "" "UNEXPECTED"
   end
 
+let test_alien_cases _ =
+  assert_equal ~msg:"punicode.js: xn-ZZZ -> u{7BA5}"
+    (Punycode.to_utf8_list "xn--ZZZ") (Ok ["\231\174\165"]) ;
+
+  assert_equal ~msg:"simpleidn: xn--bonusaa-5bb1da"
+    (Punycode.to_utf8_list "xn--bonusaa-5bb1da")
+    (Ok ["bon\196\161usa\196\167\196\167a"]) ;
+
+  assert_equal ~msg:"simpleidn: xn--hxargifdar"
+    (Punycode.to_utf8_list "xn--hxargifdar")
+    (Ok ["\206\181\206\187\206\187\206\183\
+          \206\189\206\185\206\186\206\172"])
+
 let test_quickcheck_uutf _ =
   QCheck.Test.check_exn @@ QCheck.Test.make ~count:200_000
     ~name:"quickcheck_uutf"
@@ -322,6 +336,7 @@ let suite = "ts_hand" >::: [
     "regression 10:OK domain a.a. .. .a. of 253 chars" >:: test_regression_10;
     "regression 11:FAIL \"\"" >:: test_regression_11;
     "regression 12:FAIL \".\"" >:: test_regression_12;
+    "testcases from other libraries" >:: test_alien_cases;
     "quickcheck_uutf" >::: [ OUnitTest.(TestCase (Custom_length 240.0,
                                                  test_quickcheck_uutf))
                            ];

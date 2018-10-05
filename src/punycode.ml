@@ -316,7 +316,9 @@ let encode_digit d uppercase_flag =
      d + 0x41 (* d + 'A' *)
   | false , '\x1a' .. '\x23' -> (* 26..35: lowercase 0..9 *)
      (d - 26) + 0x30 (* d-26 + '0' *)
-  | _ , _ -> failwith "TODO should not happen"
+  | _ , ch ->
+    failwith (__LOC__ ^ ": trying to decode invalid digit: "
+              ^ (Char.Ascii.escape_char ch))
 
 let adapt delta numpoints firsttime =
   let delta = match firsttime with
@@ -561,11 +563,6 @@ let encode input_utf8 : (string, punycode_encode_error) Rresult.result =
     ~value_output:initial_value_output
   >>| List.rev >>| lst_to_string
 
-let domain_size_is_ok domain =
-  let len = String.length domain in
-  len <> 0 && (len <= 253
-               || (len = 254 && String.is_suffix ~affix:"." domain))
-
 let internal_to_domain_name domain
   : (bool * Domain_name.t, punycode_encode_error) Rresult.result =
   let for_each_label acc label =
@@ -639,7 +636,8 @@ let of_domain_labels (labels:string list) =
       end
     else (* not punycode-encoded: *)
       ImmutArray.of_utf8
-        (fun s -> (Invalid_domain_name "Invalid ASCII label"
+        (fun s -> (Invalid_domain_name
+                     ("Invalid ASCII label: " ^ String.Ascii.escape s)
                    : punycode_decode_error))
         label (fun () _ -> ()) () >>| fst
       >>| fun label -> label::acc
