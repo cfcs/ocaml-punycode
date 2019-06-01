@@ -1,0 +1,7 @@
+(library
+  (name punycode)
+  (public_name punycode)
+  (synopsis "Punycode IDNA library")
+  (modules :standard)
+  (libraries astring domain-name uchar uutf rresult)
+)

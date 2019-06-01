@@ -1,0 +1,13 @@
+(executables
+  (names tests)
+  (public_names -)
+  (libraries punycode oUnit qcheck)
+)
+(alias
+  (name runtest)
+  (action
+    (progn
+      (run ./tests.exe)
+    )
+  )
+)

@@ -1,7 +1,7 @@
-opam-version: "1.2"
+opam-version: "2.0"
 name:         "punycode"
 homepage:     "https://github.com/cfcs/ocaml-punycode"
-dev-repo:     "https://github.com/cfcs/ocaml-punycode.git"
+dev-repo:     "git+https://github.com/cfcs/ocaml-punycode.git"
 bug-reports:  "https://github.com/cfcs/ocaml-punycode/issues"
 doc:          "https://cfcs.github.io/ocaml-punycode/doc"
 author:       ["cfcs"]
@@ -9,17 +9,13 @@ maintainer:   ["cfcs"]
 license:      "AGPL"
 
 build: [
-  ["ocaml" "pkg/pkg.ml" "build" "--pinned" "%{pinned}%"]
-]
-build-test: [
-  ["ocaml" "pkg/pkg.ml" "build" "--pinned" "%{pinned}%" "--tests" "true"]
-  ["ocaml" "pkg/pkg.ml" "test"]
+  ["dune" "build" "-p" name "-j" jobs]
+  ["dune" "build" "-p" name "runtest"] {with-test}
 ]
 
 depends: [
-  "ocamlfind" {build}
-  "ocamlbuild" {build}
-  "topkg" {build}
+  "ocaml"     { >= "4.02" }
+  "dune"      { >= "1.9.3" & build }
 
   "astring"
   "domain-name"
@@ -30,4 +26,3 @@ depends: [
   "qcheck" {test}
   "ounit" {test}
 ]
-available: [ ocaml-version >= "4.02.0" ]

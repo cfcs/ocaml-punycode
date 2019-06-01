@@ -55,7 +55,7 @@ val to_encoded_domain_name : string ->
     - a label is >= 64 ASCII characters or has a zero length
     - the total length is >= 255 ASCII characters including trailing ['.']
       (if not present it will be assumed).
-    See {Domain_name.of_strings} for more information regarding the
+    See {!Domain_name.of_strings} for more information regarding the
     produced value and its validation.
 *)
 
