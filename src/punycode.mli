@@ -45,7 +45,7 @@ val msg_of_decode_error : punycode_decode_error -> [> `Msg of string]
 
 
 val to_encoded_domain_name : string ->
-  (Domain_name.t, punycode_encode_error) Rresult.result
+  ([`raw] Domain_name.t, punycode_encode_error) Rresult.result
 (** [to_encoded_domain_name domain_name] is the ASCII-only Punycode
     representation of [domain_name] with each label prefixed by ["xn--"],
     and where [domain_name] is a UTF-8-encoded DNS domain name (or label).
@@ -70,7 +70,7 @@ val to_ascii : string -> (string, punycode_encode_error) Rresult.result
 (** {1:punycode2unicode Punycode -> Unicode} *)
 
 
-val of_domain_name : Domain_name.t ->
+val of_domain_name : _ Domain_name.t ->
   (Uchar.t list list, punycode_decode_error) Rresult.result
 (** [of_domain_name domain] is [domain] decoded to a list of [Uchar.t] elements
     for each label in the domain name with each label prefixed by ["xn--"]

@@ -564,7 +564,7 @@ let encode input_utf8 : (string, punycode_encode_error) Rresult.result =
   >>| List.rev >>| lst_to_string
 
 let internal_to_domain_name domain
-  : (bool * Domain_name.t, punycode_encode_error) Rresult.result =
+  : (bool * [`raw] Domain_name.t, punycode_encode_error) Rresult.result =
   let for_each_label acc label =
     match acc , label with
     | Error _ , _ -> acc
@@ -601,7 +601,7 @@ let internal_to_domain_name domain
   let has_dot, encoded_labels = match encoded_labels with
     | ""::tl -> true, List.rev tl
     | tl -> false, List.rev tl in
-  Domain_name.of_strings ~hostname:false encoded_labels
+  Domain_name.of_strings encoded_labels
   |> R.reword_error (fun (`Msg msg) -> Invalid_domain_name
                         (msg^": "^(String.concat ~sep:"."
                                      (List.map String.Ascii.escape_string
@@ -642,7 +642,7 @@ let of_domain_labels (labels:string list) =
         label (fun () _ -> ()) () >>| fst
       >>| fun label -> label::acc
   in
-  (((Domain_name.of_strings ~hostname:false labels >>| Domain_name.to_strings
+  (((Domain_name.of_strings labels >>| Domain_name.to_strings
      |> R.reword_error (fun (`Msg msg) ->
          (Invalid_domain_name msg : punycode_decode_error)
        ) >>= List.fold_left for_each_label R.(ok []))
@@ -660,12 +660,12 @@ let of_domain_labels (labels:string list) =
           Error (Invalid_domain_name "decoded size invalid"
                  : punycode_decode_error))))
 
-let of_domain_name (domain:Domain_name.t) =
-  (Domain_name.to_strings domain |> of_domain_labels)
+let of_domain_name (domain:_ Domain_name.t) =
+  (Domain_name.(to_strings (raw domain)) |> of_domain_labels)
   >>| fun x -> List.map ImmutArray.to_list x
 
 let to_utf8_list domain =
-  (Domain_name.of_string ~hostname:false domain
+  (Domain_name.of_string domain
    |> R.reword_error (fun (`Msg x) ->
        (Invalid_domain_name x : punycode_decode_error))
   ) >>| Domain_name.to_strings >>= of_domain_labels
