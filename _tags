@@ -4,4 +4,4 @@ true : package(domain-name)
 "src": include
 
 <*/*>: package(astring), package(uutf), package(rresult)
-<tests/*>: package(qcheck), package(oUnit)
+<tests/*>: package(qcheck), package(oUnit), package(crowbar)

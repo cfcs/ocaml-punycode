@@ -1,7 +1,7 @@
 (executables
   (names tests)
   (public_names -)
-  (libraries punycode oUnit qcheck)
+  (libraries punycode oUnit qcheck crowbar)
 )
 (alias
   (name runtest)

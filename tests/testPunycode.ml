@@ -298,6 +298,24 @@ let test_quickcheck_case input_str =
         `Msg str -> explain_fail str "" "UNEXPECTED"
   end
 
+let crowbar_uutf _ =
+  let str_g : string Crowbar.gen =
+    let open Crowbar in
+    (* generates a valid utf-8 string containing random unicode characters *)
+    let c_gen : int gen =
+      choose [ range 0xD7FF
+             (* skip 0xD800..DFFF since they're reserved for
+                            UTF-16 encoding: *)
+             ; map [range (*~min:0xE000 *) (0x10FFFF-0xE000)]
+                 (fun x -> x+0xE000)]
+    in
+    map [list1 c_gen] to_utf8
+  in
+  Crowbar.add_test ~name:"Punycode.to_ascii"
+    [str_g]
+    (fun s -> try Crowbar.check (test_quickcheck_case s) with
+       | _ -> Crowbar.bad_test ())
+
 let test_alien_cases _ =
   assert_equal ~msg:"punicode.js: xn-ZZZ -> u{7BA5}"
     (Punycode.to_utf8_list "xn--ZZZ") (Ok ["\231\174\165"]) ;
@@ -312,7 +330,7 @@ let test_alien_cases _ =
           \206\189\206\185\206\186\206\172"])
 
 let test_quickcheck_uutf _ =
-  QCheck.Test.check_exn @@ QCheck.Test.make ~count:200_000
+  QCheck.Test.check_exn @@ QCheck.Test.make ~count:000_000
     ~name:"quickcheck_uutf"
     (* 87: ~3 * 87 gives us max len: *)
     (utf8_string_of_size @@ Gen.int_range 1 87 )
@@ -340,4 +358,5 @@ let suite = "ts_hand" >::: [
     "quickcheck_uutf" >::: [ OUnitTest.(TestCase (Custom_length 240.0,
                                                  test_quickcheck_uutf))
                            ];
+    "crowbar" >::: [ OUnitTest.TestCase (Custom_length 240.0, crowbar_uutf) ]
   ]
