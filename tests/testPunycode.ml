@@ -330,7 +330,7 @@ let test_alien_cases _ =
           \206\189\206\185\206\186\206\172"])
 
 let test_quickcheck_uutf _ =
-  QCheck.Test.check_exn @@ QCheck.Test.make ~count:000_000
+  QCheck.Test.check_exn @@ QCheck.Test.make ~count:200_000
     ~name:"quickcheck_uutf"
     (* 87: ~3 * 87 gives us max len: *)
     (utf8_string_of_size @@ Gen.int_range 1 87 )
