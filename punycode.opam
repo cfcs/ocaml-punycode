@@ -23,6 +23,7 @@ depends: [
   "rresult"
   "uutf"
 
+  "alcotest" {test}
+  "crowbar" {test}
   "qcheck" {test}
-  "ounit" {test}
 ]
