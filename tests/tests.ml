@@ -5,6 +5,7 @@ open Astring
 module Punycode_tests = struct
   let () = Printexc.record_backtrace false
 
+  [@@@ocamlformat "disable=true"]
   let rfc3492_vectors = [ (* lifted from RFC-3492 section 7.1*)
     ([ 0x0644; 0x064A; 0x0647; 0x0645; 0x0627; 0x0628; 0x062A; 0x0643; 0x0644;
      0x0645; 0x0648; 0x0634; 0x0639; 0x0631; 0x0628; 0x064A; 0x061F]
@@ -66,6 +67,7 @@ module Punycode_tests = struct
     ([0x305D; 0x306E; 0x30B9; 0x30D4; 0x30FC; 0x30C9; 0x3067],
     "d9juau41awczczp")
   ]
+  [@@@ocamlformat "disable=false"]
 
   let utf8_buffer_len = 254 + 4
 
