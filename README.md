@@ -126,3 +126,13 @@ utop # Punycode.to_utf8 "xn--nclear-3b9c.disarmament.xn--v4h.example.com";;
 - : (string, Punycode.punycode_decode_error) result =
 Result.Ok "n☢clear.disarmament.☮.example.com"
 ```
+
+### Run tests
+
+This project organizes its tests using Alcotest, and this dune alias runs them:
+
+```shell
+dune runtest --force --no-buffer
+```
+
+Using `--no-buffer` gets you colors in output.
