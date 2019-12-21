@@ -1,5 +1,6 @@
 opam-version: "2.0"
 name:         "punycode"
+synopsis:     "RFC 3492: IDNA Punycode library"
 homepage:     "https://github.com/cfcs/ocaml-punycode"
 dev-repo:     "git+https://github.com/cfcs/ocaml-punycode.git"
 bug-reports:  "https://github.com/cfcs/ocaml-punycode/issues"
@@ -23,7 +24,7 @@ depends: [
   "rresult"
   "uutf"
 
-  "alcotest" {test}
-  "crowbar" {test}
-  "qcheck" {test}
+  "alcotest" {with-test}
+  "crowbar" {with-test}
+  "qcheck" {with-test}
 ]
